@@ -57,9 +57,9 @@ FxBase {
         if(~sendAGroup.notNil and: { ~sendA.notNil }, {
             syn = Synth.new(this.symbol, [
                 \inBus, ~sendA,
-                \outBus, Server.default.outputBus,
+                \outBus, ~preMix,
             ] ++ params.asPairs, target: ~sendAGroup);
-            "Added to send A".postln;
+            "Added to send A (pre-insert)".postln;
         });
     }
     
@@ -67,19 +67,19 @@ FxBase {
         if(~sendBGroup.notNil and: { ~sendB.notNil }, {
             syn = Synth.new(this.symbol, [
                 \inBus, ~sendB,
-                \outBus, Server.default.outputBus,
+                \outBus, ~postMix,
             ] ++ params.asPairs, target: ~sendBGroup);
-            "Added to send B".postln;
+            "Added to send B (post-insert)".postln;
         });
     }
     
     setupInsert {
         if(FxSetup.insertGroup.notNil, {
             "Setting up insert effect %\n".postf(this.symbol);
-            
+
             // Create the synth first
             syn = Synth.new(this.symbol, [
-                \inBus, Server.default.outputBus,  // Initial routing, will be updated
+                \inBus, ~insertInput,  // Read from insertInput bus
                 \outBus, FxSetup.wet,
             ] ++ params.asPairs, target: FxSetup.insertGroup, addAction: \addToTail);
             

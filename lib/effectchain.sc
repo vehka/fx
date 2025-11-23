@@ -63,13 +63,13 @@ EffectChain {
     // Calculate routing for a specific position in the chain
     calculateRouting { |position|
         var routing = ();
-        
+
         routing.inBus = switch(position)
-        { 0 } { Server.default.outputBus }
+        { 0 } { ~insertInput }  // First effect reads from insertInput bus
         { 1 } { buses.chain1 }
         { 2 } { buses.chain2 }
         { 3 } { buses.chain3 };
-        
+
         routing.outBus = if(position == (effects.size - 1), {
             buses.wet // Last effect always outputs to wet bus
         }, {
@@ -78,7 +78,7 @@ EffectChain {
             { 1 } { buses.chain2 }
             { 2 } { buses.chain3 }
         });
-        
+
         ^routing;
     }
     

@@ -2,15 +2,17 @@
 # Compiles the fx classes into a scratch sclang and runs the click test.
 # Needs sclang, scsynth and a JACK server (pipewire-jack is enough).
 here=$(cd "$(dirname "$0")" && pwd)
-conf=$(mktemp --suffix=.yaml)
-cat > "$conf" <<EOF
+work=$(mktemp -d)
+# the test plugin is not a .sc file in the repo, so norns does not compile it
+cp "$here/FxTestLegacy.sc.txt" "$work/FxTestLegacy.sc"
+cat > "$work/conf.yaml" <<EOF
 includePaths:
     - $here/../lib
-    - $here/classes
+    - $work
 excludePaths: []
 postInlineWarnings: false
 EOF
-QT_QPA_PLATFORM=offscreen timeout 90 sclang -l "$conf" "$here/click_test.scd"
+QT_QPA_PLATFORM=offscreen timeout 90 sclang -l "$work/conf.yaml" "$here/click_test.scd"
 status=$?
-rm -f "$conf"
+rm -rf "$work"
 exit $status

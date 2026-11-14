@@ -75,6 +75,7 @@ function Core.register(unit)
     table.insert(Core.names, unit.name)
   end
   unit.label = unit.label or unit.name:gsub("^fx_", "")
+  unit.param_ids = {}
   Core.units[unit.name] = unit
   return unit
 end
@@ -248,6 +249,7 @@ end
 --- The slot option and the dry/wet control every unit has. Exactly two
 -- params, as in v1, so plugin group sizes stay correct.
 function Core.add_slot_params(unit, slot_id, slot_name, mix_id)
+  unit.params_added = true
   unit.slot_id = slot_id
   unit.mix_id = mix_id
   params:add_option(slot_id, slot_name, Core.slot_options, 1)
@@ -460,8 +462,6 @@ local function add_preset_params()
 end
 
 function Core.add_params()
-  Core.ids = {}
-  Core.is_fx_id = {}
   table.sort(Core.names)
   params:add_separator("fx_mod", "fx")
   add_rack_params()
@@ -469,10 +469,10 @@ function Core.add_params()
   add_preset_params()
   for _, name in ipairs(Core.names) do
     local unit = Core.units[name]
-    unit.slot_id, unit.mix_id = nil, nil
-    unit.param_ids = {}
-    local ok, err
-    if unit.legacy then
+    local ok, err = true, nil
+    if unit.params_added then
+      -- a v1 plugin that adds its params from its own script_post_init hook
+    elseif unit.legacy then
       ok, err = pcall(unit.legacy.add_params, unit.legacy)
     else
       ok, err = pcall(add_native_unit, unit)
@@ -560,6 +560,14 @@ end
 function Core.pre_init()
   Core.ensure()
   Core.pset_file = nil
+  -- per-script param bookkeeping; reset here, before any plugin adds params
+  Core.ids = {}
+  Core.is_fx_id = {}
+  for _, name in ipairs(Core.names) do
+    local unit = Core.units[name]
+    unit.slot_id, unit.mix_id, unit.params_added = nil, nil, false
+    unit.param_ids = {}
+  end
   -- note which PSET the script reads in init; its fx values are applied once
   -- the fx params exist. Instance override, removed again in post_init.
   local class_read = getmetatable(params).__index.read

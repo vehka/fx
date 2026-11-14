@@ -12,8 +12,17 @@ FxBase {
 
 	symbol { ^\fillIn }
 
-	// v1 plugins were driven over per-plugin OSC paths; the rack does it now
-	listenOSC { }
+	// Called once at startup. Placement is driven by the rack now, but some v1
+	// plugins send params straight to their own <subPath>/set, and some
+	// override this (calling super) to add handlers of their own.
+	listenOSC {
+		var name = this.subPath.asString;
+		if(name.beginsWith("/")) { name = name.drop(1) };
+		OSCFunc.new({ |msg|
+			var unit = FxUnit.all[name.asSymbol];
+			unit !? { unit.set(msg[1].asSymbol, msg[2].asFloat) };
+		}, this.subPath ++ "/set");
+	}
 }
 
 FxSetup {

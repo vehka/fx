@@ -164,7 +164,14 @@ FxUnit {
 	set { |key, value|
 		switch(key,
 			\mix, { this.setMix(value) },
-			\drywet, { this.setMix(value) },
+			\drywet, {
+				this.setMix(value);
+				// some v1 SynthDefs have a drywet control of their own
+				if(this.isLegacy) {
+					params[\drywet] = value;
+					if(node.notNil) { node.set(\drywet, value) };
+				};
+			},
 			\bypass, { this.setBypass(value) },
 			\tail, { tail = value; if(node.notNil) { node.set(\fx_tail, tail) } },
 			{

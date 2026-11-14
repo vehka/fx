@@ -127,6 +127,20 @@ function Dist:add_params()
 end
 mods.hook.register("script_pre_init", "distortion mod pre init", function() Dist:install() end)
 
+-- a v1 plugin that adds its own params from script_post_init, uses separators
+-- and sends one param over its own OSC path, as fx_resonator and fx_grains do
+local Res = fx:new{ subpath = "/fx_res" }
+function Res:add_params()
+  params:add_separator("fx_res", "fx res")
+  Res:add_slot("fx_res_slot", "slot")
+  Res:add_control("fx_res_damping", "damping", "damping", controlspec.new(0, 1, 'lin', 0, 0.7))
+  params:add_option("fx_res_model", "model", { "modal", "string" }, 1)
+  params:set_action("fx_res_model", function(m)
+    osc.send({ "localhost", 57120 }, self.subpath .. "/set", { "model", m - 1 })
+  end)
+end
+mods.hook.register("script_post_init", "fx res post init", function() Res:add_params() end)
+
 fx.register{
   name = "echo",
   title = "Echo",
@@ -152,6 +166,11 @@ check("ensure is sent before init", sent[1] and sent[1].path == "/fx/ensure")
 check("v1 plugin params exist with their v1 ids",
   params.lookup["fx_distortion_slot"] and params.lookup["fx_distortion_slot_drywet"] and params.lookup["fx_distortion_drive"])
 check("v2 unit params exist", params.lookup["fx_echo_slot"] and params.lookup["fx_echo_time"] and params.lookup["fx_echo_bypass"])
+check("a v1 plugin adding its own params is not added twice",
+  params.lookup["fx_res_slot"] and params:get("fx_res_damping") == 0.7 and core.units.fx_res.slot_id == "fx_res_slot")
+params:set("fx_res_slot", 4)
+check("and its slot works", core.rack.insert[1] == "fx_res" and has("/fx/slot", "insert 1 fx_res"))
+params:set("fx_res_slot", 1)
 check("fx params come after the script's own", params.lookup["script_param"] < params.lookup["fx_rack"])
 check("params.read override is removed", rawget(params, "read") == nil)
 check("dry/wet hidden while the unit is not an insert", not params:visible("fx_distortion_slot_drywet"))

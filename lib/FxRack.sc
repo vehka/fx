@@ -302,6 +302,7 @@ FxRack {
 	}
 
 	*addOSC {
+		FxUnit.all.do { |unit| if(unit.isLegacy) { unit.plugin.listenOSC } };
 		OSCFunc({ this.ensure }, '/fx/ensure');
 		OSCFunc({ |msg|
 			var chainName = msg[1].asSymbol, index = msg[2].asInteger, unitName = msg[3].asSymbol;

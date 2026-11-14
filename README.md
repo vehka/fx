@@ -16,6 +16,10 @@ script then has these at the end of its params menu:
 - **fx rack**: what is in each insert and send slot. Inserts run in slot order.
 - **fx sends**: per send, the level tapped from the engine output, where it is
   tapped (pre/post insert), the return level and where it returns.
+- **fx presets**: save and load presets per effect, and scenes of the whole
+  rack. "save as default" makes a preset the effect's starting values; "save
+  as default rack" makes a scene the rack for scripts that have no fx settings
+  of their own. Files live in `dust/data/fx/`.
 - one group per effect, with `slot` (none / send a / send b / insert), dry/wet
   and the effect's own params.
 
@@ -62,6 +66,10 @@ fx.register{
 ```
 
 Param types: `control` (default), `taper`, `number`, `option`, `binary`.
+
+Factory presets go in `presets/<name>/<preset>.fxp` in the plugin's directory.
+Save them on the device from **fx presets** and copy them from
+`dust/data/fx/presets/<name>/`.
 
 ## Engines
 

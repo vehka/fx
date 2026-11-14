@@ -139,13 +139,27 @@ Restoring values at `script_post_init`:
 
 PSETs loaded later from the params menu read fx params natively.
 
-## Presets (step 3)
+## Presets
 
-- Per-fx presets in `dust/data/fx/<unit>/<name>.fxp`; `default.fxp` is applied
-  when the unit is placed; factory presets ship in the plugin's `presets/`.
-  Each fx group gets `preset`, `load`, `save as...`, `save as default`.
-- Rack scenes save the rack, routing and all values. A default rack applies to
-  scripts with no fx state.
+Files are `"id": value` lines, like a PSET.
+
+| What | Where |
+|---|---|
+| user presets of a unit | `dust/data/fx/presets/<unit>/<name>.fxp` |
+| factory presets | `<plugin>/presets/<unit>/<name>.fxp`, read-only; a user preset of the same name wins |
+| rack scenes | `dust/data/fx/scenes/<name>.fxs` |
+
+- A unit preset holds the unit's own params and its dry/wet, not its slot.
+- A scene holds every fx param: slots, positions, sends and all unit values.
+  Loading a scene removes units it does not mention.
+- The **fx presets** params group has one effect selector with preset, load,
+  save, save as..., save as default and delete, and the same for scenes. One
+  shared group is used because v1 plugin groups have a fixed size.
+- The preset and scene named `default` are applied when a script starts.
+  Precedence: the live rack (persist on) > fx values in the PSET the script
+  read > default scene > each unit's default preset > built-in defaults.
+  Defaults are not re-applied when a unit is placed, so moving a unit never
+  discards edits.
 
 ## Later steps
 

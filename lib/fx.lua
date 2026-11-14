@@ -21,10 +21,26 @@ local core = require 'fx/lib/core'
 
 local Fx = {}
 
+-- the plugin's directory, from the file that called the registering function;
+-- factory presets are looked up under it
+local function caller_dir()
+  local here = debug.getinfo(1, "S").source
+  for level = 2, 8 do
+    local info = debug.getinfo(level, "S")
+    if not info then break end
+    if info.source ~= here then
+      local dir = info.source:match("^@(.*)/lib/[^/]+%.lua$")
+      if dir then return dir end
+    end
+  end
+  return nil
+end
+
 Fx.slot_symbols = { "none", "sendA", "sendB", "insert" }
 
 --- Register a v2 unit.
 function Fx.register(def)
+  def.plugin_dir = def.plugin_dir or caller_dir()
   return core.register(def)
 end
 
@@ -36,7 +52,7 @@ function Fx:new(o)
   setmetatable(o, self)
   self.__index = self
   if type(o.subpath) == "string" then
-    o.unit = core.register{ name = o.subpath:gsub("^/", ""), legacy = o }
+    o.unit = core.register{ name = o.subpath:gsub("^/", ""), legacy = o, plugin_dir = caller_dir() }
   end
   return o
 end
@@ -49,7 +65,7 @@ function Fx:add_params() end
 
 local function bind(self, id, key)
   local name = self.unit.name
-  core.bind(id, function(value) core.set(name, key, value) end)
+  core.bind(id, function(value) core.set(name, key, value) end, self.unit)
 end
 
 function Fx:add_control(id, name, key, spec, formatter)

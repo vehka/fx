@@ -194,11 +194,13 @@ local function quiet_set(id, value)
   Core.live[id] = params:get(id)
 end
 
---- Register an fx param: its action also records the live value.
-function Core.bind(id, action)
+--- Register an fx param: its action also records the live value. Params
+-- given a unit are what that unit's presets save.
+function Core.bind(id, action, unit)
   if not Core.is_fx_id[id] then
     Core.is_fx_id[id] = true
     table.insert(Core.ids, id)
+    if unit then table.insert(unit.param_ids, id) end
   end
   params:set_action(id, function(value)
     Core.live[id] = value
@@ -253,7 +255,7 @@ function Core.add_slot_params(unit, slot_id, slot_name, mix_id)
     Core.place_in_chain(unit.name, Core.slot_chain[value] or nil)
   end)
   params:add_control(mix_id, "dry/wet", controlspec.new(0, 1, 'lin', 0, 1), display_mix)
-  Core.bind(mix_id, function(value) Core.set(unit.name, "mix", value) end)
+  Core.bind(mix_id, function(value) Core.set(unit.name, "mix", value) end, unit)
   params:hide(mix_id)
 end
 
@@ -274,7 +276,7 @@ local function add_native_param(unit, p)
   else
     error("fx: unknown param type " .. tostring(kind))
   end
-  Core.bind(id, function(value) Core.set(unit.name, p.id, value) end)
+  Core.bind(id, function(value) Core.set(unit.name, p.id, value) end, unit)
 end
 
 local function add_native_unit(unit)
@@ -350,6 +352,113 @@ local function add_send_params()
   end
 end
 
+-- replace the choices of an unsaved option param, optionally selecting one
+local function set_options(id, list, select)
+  local p = params:lookup_param(id)
+  if #list == 0 then list = { "-" } end
+  p.options = list
+  p.count = #list
+  p.selected = util.clamp(p.selected, 1, p.count)
+  if select then
+    for i, v in ipairs(list) do
+      if v == select then p.selected = i end
+    end
+  end
+end
+
+local function ask_name(heading, callback)
+  local textentry = require 'textentry'
+  textentry.enter(function(text)
+    if text and text ~= "" then callback(text) end
+  end, "", heading)
+end
+
+local function add_preset_params()
+  local presets = require 'fx/lib/presets'
+  local labels = {}
+  for _, name in ipairs(Core.names) do table.insert(labels, Core.units[name].label) end
+  local has_units = #labels > 0
+  if not has_units then labels = { "-" } end
+
+  local function unit() return Core.units[Core.names[params:get("fx_preset_unit")]] end
+  local function preset() return params:string("fx_preset_name") end
+  local function refresh_presets(select)
+    set_options("fx_preset_name", has_units and presets.list(unit()) or {}, select)
+  end
+  local function scene() return params:string("fx_scene_name") end
+  local function refresh_scenes(select)
+    set_options("fx_scene_name", presets.scenes(), select)
+  end
+  local function trigger(id, name, action)
+    params:add_trigger(id, name)
+    params:set_action(id, action)
+  end
+  local function unsaved_option(id, name)
+    params:add_option(id, name, { "-" }, 1)
+    params:lookup_param(id).save = false
+  end
+
+  params:add_group("fx_presets", "fx presets", 15)
+
+  params:add_separator("fx_preset_sep", "effect presets")
+  unsaved_option("fx_preset_unit", "effect")
+  set_options("fx_preset_unit", labels)
+  params:set_action("fx_preset_unit", function() refresh_presets() end)
+  unsaved_option("fx_preset_name", "preset")
+  trigger("fx_preset_load", "load", function()
+    if has_units and preset() ~= "-" then presets.load(unit(), preset()) end
+  end)
+  trigger("fx_preset_save", "save", function()
+    if not has_units then return end
+    if preset() == "-" then
+      ask_name("preset name", function(text) refresh_presets(presets.save(unit(), text)) end)
+    else
+      refresh_presets(presets.save(unit(), preset()))
+    end
+  end)
+  trigger("fx_preset_save_as", "save as...", function()
+    if not has_units then return end
+    ask_name("preset name", function(text) refresh_presets(presets.save(unit(), text)) end)
+  end)
+  trigger("fx_preset_save_default", "save as default", function()
+    if has_units then refresh_presets(presets.save(unit(), presets.DEFAULT)) end
+  end)
+  trigger("fx_preset_delete", "delete", function()
+    if has_units and preset() ~= "-" then
+      presets.delete(unit(), preset())
+      refresh_presets()
+    end
+  end)
+
+  params:add_separator("fx_scene_sep", "rack scenes")
+  unsaved_option("fx_scene_name", "scene")
+  trigger("fx_scene_load", "load", function()
+    if scene() ~= "-" then presets.load_scene(scene()) end
+  end)
+  trigger("fx_scene_save", "save", function()
+    if scene() == "-" then
+      ask_name("scene name", function(text) refresh_scenes(presets.save_scene(text)) end)
+    else
+      refresh_scenes(presets.save_scene(scene()))
+    end
+  end)
+  trigger("fx_scene_save_as", "save as...", function()
+    ask_name("scene name", function(text) refresh_scenes(presets.save_scene(text)) end)
+  end)
+  trigger("fx_scene_save_default", "save as default rack", function()
+    refresh_scenes(presets.save_scene(presets.DEFAULT))
+  end)
+  trigger("fx_scene_delete", "delete", function()
+    if scene() ~= "-" then
+      presets.delete_scene(scene())
+      refresh_scenes()
+    end
+  end)
+
+  refresh_presets()
+  refresh_scenes()
+end
+
 function Core.add_params()
   Core.ids = {}
   Core.is_fx_id = {}
@@ -357,9 +466,11 @@ function Core.add_params()
   params:add_separator("fx_mod", "fx")
   add_rack_params()
   add_send_params()
+  add_preset_params()
   for _, name in ipairs(Core.names) do
     local unit = Core.units[name]
     unit.slot_id, unit.mix_id = nil, nil
+    unit.param_ids = {}
     local ok, err
     if unit.legacy then
       ok, err = pcall(unit.legacy.add_params, unit.legacy)
@@ -374,26 +485,29 @@ end
 ----------------------------------------------------------------------------
 -- restoring values
 
--- read only the fx params from a PSET file, running their actions
-local function read_fx_params(filename)
+--- Read "id": value lines, setting the params whose id is in `accept`.
+-- Returns how many were set.
+function Core.read_file(filename, accept, silent)
   local fd = io.open(filename, "r")
-  if not fd then return false end
+  if not fd then return 0 end
   io.close(fd)
+  local count = 0
   for line in io.lines(filename) do
     local id, value = string.match(line, "(\".-\")%s*:%s*(.*)")
     if id and value then
       id = id:gsub('^"', ''):gsub('"$', '')
       local index = params.lookup[id]
       local number = tonumber(value)
-      if Core.is_fx_id[id] and index and number then
+      if accept[id] and index and number then
         local p = params.params[index]
         if not (p.t == params.tBINARY and p.behavior == "trigger") then
-          params:set(id, number)
+          params:set(id, number, silent)
+          count = count + 1
         end
       end
     end
   end
-  return true
+  return count
 end
 
 local function bang_fx_params()
@@ -404,7 +518,11 @@ local function bang_fx_params()
 end
 
 --- Give the new script's fx params their values and make SC match.
+-- Precedence: the live rack (persist on) > fx values in the PSET the script
+-- read > the default scene > each unit's default preset > built-in defaults.
 function Core.restore()
+  local presets = require 'fx/lib/presets'
+  presets.apply_defaults()
   local have_live = Core.settings.persist and next(Core.live) ~= nil
   if have_live then
     -- station mode: the rack kept running; params take the live values
@@ -412,8 +530,10 @@ function Core.restore()
       local value = Core.live[id]
       if value ~= nil then params:set(id, value, true) end
     end
-  elseif Core.pset_file then
-    read_fx_params(Core.pset_file)
+  else
+    local found = 0
+    if Core.pset_file then found = Core.read_file(Core.pset_file, Core.is_fx_id) end
+    if found == 0 then presets.load_scene(presets.DEFAULT) end
   end
   Core.push_rack()
   bang_fx_params()

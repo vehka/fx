@@ -20,7 +20,14 @@ norns = {
   state = { data = tmp .. "/data/script/", shortname = "script", pset_last = 1 },
   pmap = { data = {} },
 }
-_norns = {}
+_norns = {
+  execute = function(cmd)
+    local p = io.popen(cmd .. " 2>/dev/null")
+    local out = p:read("*a")
+    p:close()
+    return out
+  end,
+}
 _menu = { rebuilds = 0, rebuild_params = function() _menu.rebuilds = _menu.rebuilds + 1 end }
 util = require 'util'
 tab = require 'tabutil'
@@ -38,6 +45,12 @@ package.preload['core/mods'] = function()
     hook = { register = function(which, name, fn) hooks[which] = hooks[which] or {}; hooks[which][name] = fn end },
     menu = { register = function() end, redraw = function() end, exit = function() end },
   }
+end
+
+-- textentry answers with whatever the test queued
+local typed
+package.preload['textentry'] = function()
+  return { enter = function(callback) callback(typed) end }
 end
 
 local quiet_print = print
@@ -82,6 +95,8 @@ local function start_script(script_init)
   run_hook("script_post_init")
 end
 
+local function trigger(id) params:lookup_param(id):bang() end
+
 local function stop_script()
   sent = {}
   run_hook("script_post_cleanup")
@@ -96,6 +111,14 @@ local fx = require 'fx/lib/fx'
 local mods = require 'core/mods'
 
 local Dist = fx:new{ subpath = "/fx_distortion" }
+-- pretend the plugin ships a factory preset
+Dist.unit.plugin_dir = tmp .. "/code/fx_distortion"
+os.execute("mkdir -p " .. tmp .. "/code/fx_distortion/presets/fx_distortion")
+do
+  local f = io.open(tmp .. "/code/fx_distortion/presets/fx_distortion/crunch.fxp", "w")
+  f:write('-- fx preset: fx_distortion\n"fx_distortion_drive": 0.9\n"fx_distortion_mode": 2\n"fx_echo_time": 1.5\n')
+  f:close()
+end
 function Dist:add_params()
   params:add_group("fx_distortion", "FX Distortion", 4)
   Dist:add_slot("fx_distortion_slot", "slot")
@@ -214,6 +237,100 @@ for i = 1, 4 do params:set("fx_filler" .. i .. "_slot", 4) end
 params:set("fx_echo_slot", 4)
 check("a fifth insert takes the last slot and the occupant leaves the rack",
   core.rack.insert[4] == "echo" and core.locate("filler4") == nil and params:get("fx_filler4_slot") == 1)
+
+-- presets ---------------------------------------------------------------------
+stop_script()
+start_script()
+local presets = require 'fx/lib/presets'
+os.execute("mkdir -p " .. tmp .. "/code/plug/lib")
+do
+  local f = io.open(tmp .. "/code/plug/lib/mod.lua", "w")
+  f:write("local unit = require('fx/lib/fx').register{ name = 'plug', params = {} }\nreturn unit")
+  f:close()
+end
+check("plugin directory is found from the registering file", require('plug/lib/mod').plugin_dir == tmp .. "/code/plug")
+check("factory preset is listed", params:string("fx_preset_name") == "-" and (function()
+  params:set("fx_preset_unit", 2) -- echo, fx_distortion, filler1..4 sorted: echo, filler1.., fx_distortion
+  for i, name in ipairs(core.names) do
+    if name == "fx_distortion" then params:set("fx_preset_unit", i) end
+  end
+  return params:string("fx_preset_name") == "crunch"
+end)())
+params:set("fx_echo_time", 0.3)
+sent = {}
+trigger("fx_preset_load")
+check("loading a preset sets the unit's params and reaches SC",
+  params:get("fx_distortion_drive") == 0.9 and params:get("fx_distortion_mode") == 2 and has("/fx/set", "fx_distortion drive 0.9"))
+check("a preset cannot touch another unit's params", math.abs(params:get("fx_echo_time") - 0.3) < 0.001)
+
+params:set("fx_distortion_drive", 0.33)
+params:set("fx_distortion_slot", 4)
+params:set("fx_distortion_slot_drywet", 0.6)
+typed = "my/../preset"
+trigger("fx_preset_save_as")
+check("save as writes a user preset with a safe file name",
+  util.file_exists(_path.data .. "fx/presets/fx_distortion/my_.._preset.fxp") and params:string("fx_preset_name") == "my_.._preset")
+local text = io.open(_path.data .. "fx/presets/fx_distortion/my_.._preset.fxp"):read("*a")
+check("preset holds the unit's params and dry/wet but not its slot",
+  text:find('"fx_distortion_drive": 0.33', 1, true) and text:find('"fx_distortion_slot_drywet": 0.6', 1, true)
+  and not text:find('fx_distortion_slot"', 1, true))
+params:set("fx_distortion_drive", 0.1)
+trigger("fx_preset_save_default")
+check("default is listed first", presets.list(core.units.fx_distortion)[1] == "default")
+check("factory presets cannot be deleted", presets.delete(core.units.fx_distortion, "crunch") == false)
+params:set("fx_preset_name", 3)
+trigger("fx_preset_delete")
+check("delete removes the selected user preset", #presets.list(core.units.fx_distortion) == 2)
+
+-- scenes --------------------------------------------------------------------
+params:set("fx_echo_slot", 2)
+params:set("fx_send_a_level", 0.7)
+typed = "wide"
+trigger("fx_scene_save")
+check("scene saved and selected", params:string("fx_scene_name") == "wide")
+params:set("fx_echo_slot", 1)
+params:set("fx_filler1_slot", 4)
+params:set("fx_send_a_level", 0)
+params:set("fx_distortion_drive", 0.99)
+trigger("fx_scene_load")
+check("scene restores rack, sends and values",
+  core.rack.a[1] == "echo" and core.locate("filler1") == nil and params:get("fx_send_a_level") == 0.7
+  and params:get("fx_distortion_drive") == 0.1)
+check("scene load puts the insert back first", core.rack.insert[1] == "fx_distortion")
+
+-- a unit installed after the scene was saved leaves the rack on load
+fx.register{ name = "newcomer", params = {} }
+stop_script()
+start_script()
+params:set("fx_newcomer_slot", 4)
+for i, name in ipairs(presets.scenes()) do
+  if name == "wide" then params:set("fx_scene_name", i) end
+end
+trigger("fx_scene_load")
+check("units the scene does not mention leave the rack", core.locate("newcomer") == nil)
+
+-- defaults at script start --------------------------------------------------
+stop_script()
+start_script()
+check("unit default preset replaces the built-in default", params:get("fx_distortion_drive") == 0.1)
+check("without a default scene the rack starts empty", core.rack.insert[1] == nil)
+check("the default is sent to SC", has("/fx/set", "fx_distortion drive 0.1"))
+
+params:set("fx_echo_slot", 4)
+params:set("fx_distortion_drive", 0.45)
+trigger("fx_scene_save_default")
+stop_script()
+start_script()
+check("default scene applies to a script with no fx state",
+  core.rack.insert[1] == "echo" and params:get("fx_distortion_drive") == 0.45 and has("/fx/slot", "insert 1 echo"))
+
+stop_script()
+start_script(function()
+  params:add_number("script_param", "script param", 0, 10, 3)
+  params:read(1)
+end)
+check("fx values in the script's PSET win over the default scene",
+  params:get("fx_distortion_drive") == 0.8 and core.rack.insert[2] == "fx_distortion")
 
 os.execute("rm -rf " .. tmp)
 quiet_print(failures == 0 and ("PASS (" .. count .. " checks)") or ("FAILED: " .. failures .. " of " .. count))

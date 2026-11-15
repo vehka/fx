@@ -30,11 +30,12 @@ Done and tested (Lua test, click test, and on the shield):
    (`lib/chooser.lua`).
 5. Routing: audio inputs as a source (`fx_input_*`), send-to-send
    (`fx_send_a_to_b`, `fx_send_b_to_a`), feedback routing through the send
-   inlets (`FxSend`, `\fxInlet`). On the shield this was checked by node
-   tree, SC state, CPU and xruns only, not by signal or by ear.
+   inlets (`FxSend`, `\fxInlet`). On the shield: node tree, SC state, CPU
+   (about 17% under awake with two v1 effects) and xruns were checked, and
+   the user confirmed the feedback routing by ear (2026-11-15).
 
-Not verified: by ear with real engines and reverbs; the audio input and the
-feedback routings with real signals on the device; the "save as..." name
+Not verified: the audio input (`fx_input_*`) with a real source on the
+device; the "save as..." name
 entry and the mod settings page on screen; start-up restore from a script's
 own PSET on the device (covered in the Lua test only).
 
@@ -46,6 +47,27 @@ user's older WIP ("WIP engine-driven sends"); leave it alone.
 In the order agreed with the user:
 
 - **Step 5, rack page in the mod menu:** slots, order, bypass, meters, CPU.
+  This is the next thing to do. Starting points:
+  - The page is the `menu` table in `lib/mod.lua` (`mods.menu.register`),
+    today two settings rows. Keep those reachable.
+  - Change the rack through `Core.set_row` / `Core.place` and the bypass and
+    mix params, so the params menu, PSETs and the live state stay in step.
+    The page also has to work with no script loaded (`Core.active` false: no
+    params exist, the model and SC still do).
+  - Order: `Core.place(name, chain, index)` swaps with the occupant. On the
+    SC side a move is release + start, so it crossfades.
+  - v1 units have no bypass param yet (see below); the page needs one for
+    every unit, so do that first.
+  - Meters and CPU need data from SC that does not exist yet. Crone's own
+    polls (`amp_out_l/r`, `cpu_avg`, `cpu_peak`) are script-owned and reset
+    at script change; a mod-owned path is an `OSCFunc`-side `SendReply` or a
+    routine in `FxRack` sending to matron (port 10111) and an `osc.event`
+    handler, which must chain any handler the script sets. Decide and
+    record it in `docs/DESIGN.md`.
+  - Redraw only while the page is open (`menu.init` / `menu.deinit`), at a
+    fixed rate, and stop the meter traffic when it closes.
+  - Agree the layout with the user before building much; screenshots from
+    the device (see "On the device") are the quickest way to show it.
 - **Step 6:** softcut as a source (needs more SC input channels and JACK
   routes via `audio.port_connect` and the
   `audio_post_restore_default_routing` hook; whether a mod can raise
@@ -100,7 +122,11 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   `test/click_test.scd`, remove the server boot/quit/exit lines, and load it.
   It plays a test tone on the outputs; free `testSrc` and any `testHard`
   node afterwards.
-- Tell the user before restarting or making sound on their device.
+- Tell the user before restarting or making sound on their device. Leave
+  the rack empty and the fx params neutral when done, above all the send
+  levels of any feedback patch.
+- `repl.py` needs `websocket-client`: `python3 -m venv <dir outside the repo>`
+  and `pip install websocket-client`, then run it with that venv's python.
 - v1 is backed up on the shield at `~/fx-v1-backup`, the old mod list at
   `~/system.mods.pre-fx2`.
 
@@ -136,8 +162,9 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   cooperating engines write to the chain bus.
 - **A PSET with a post tap and a pre return was a plain post return before
   step 4** and is now a feedback loop.
-- **The REPL client needs `websocket-client`**, which is not installed on the
-  user's laptop: make a venv outside the repo.
+- **Pre tap with pre return is not a loop**: the return lands after the tap
+  point. Feedback needs a post tap with a pre return, or both send-to-send
+  levels with an effect on each send.
 - **SC dictionary `put` returns the dictionary**, so
   `x = d[k] ?? { d[k] = v }` does not give you `v`.
 - **Mod load order is not alphabetical**, and `system_post_startup` can run

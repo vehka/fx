@@ -12,7 +12,8 @@ behaviour in `README.md`; this file is only what you need to resume work.
 
 A norns mod: a rack of SuperCollider effects (serial inserts and two send
 chains) that works with any script. This is v2, a rewrite, on branch `v2`.
-It targets norns 3.x only and replaces v1 in `dust/code/fx`.
+It targets norns 3.x and replaces v1 in `dust/code/fx`. On older versions
+(no `audio.port_connect`) only softcut routing is skipped; keep it that way.
 
 Read `docs/DESIGN.md` first. It has the signal model, the node tree, the Lua
 model and the precedence rules for restoring values.
@@ -51,6 +52,19 @@ Done and tested (Lua test, click test, and on the shield):
    rows, the opened-row view and the rack name entry were NOT checked there,
    by screenshot or by hand: the user took the shield offline first.
 
+8. Step 6, the last of the plan (2026-11-15): softcut as a source, sidechain
+   and modulation buses, tempo, single-file plugins through
+   `dust/data/fx/units.lua`, multiple instances ("copies"), `fx.request`.
+   See the sections of those names in the design. Lua test and click test
+   only: NOTHING of it has run on the shield. The README has a signal graph
+   of the whole rack; keep it in step with routing changes.
+
+Not verified on the device, step 6: that `FxRack.initClass` really gets the
+server booted with four inputs under Crone (`SuperCollider:in_3` in
+`audio.input_ports()`), the softcut routes and their restore after a script
+change, whether repatching clicks, that `units.lua` is written before the
+first script reads it, the tempo coroutine, and the new page rows.
+
 Not verified: the rack page with the physical keys and encoders, above all
 the K1-hold gestures and how the meters look in motion (the user has not
 tried it yet); the "save as..." name entry; start-up restore from a script's
@@ -61,23 +75,25 @@ user's older WIP ("WIP engine-driven sends"); leave it alone.
 
 ## Next
 
-First check the second pass of the rack page on the shield (see 7 above;
-`test/run.lua` uses `page.select(label)`, on the device it is
+The plan is implemented; what is left is the device. Check step 6 and the
+second pass of the rack page on the shield (see 7 and 8 above; `test/run.lua`
+uses `page.select(label)`, on the device it is
 `_menu.m["fx"].select("send a")` and so on) and ask the user how it feels in
-the hand. Then, in the order agreed with the user:
-
-- **Step 6:** softcut as a source (needs more SC input channels and JACK
-  routes via `audio.port_connect` and the
-  `audio_post_restore_default_routing` hook; whether a mod can raise
-  `numInputBusChannels` before Crone boots the server is unverified),
-  sidechain and modulation control buses, tempo sync, single-file plugins
-  with params from SynthDef metadata, multiple instances per unit, a script
-  API to request a rack.
+the hand. For step 6 start with `audio.input_ports()` after a restart: if
+`SuperCollider:in_3` is not there, the server options were set too late and
+softcut needs another way in. No effect that uses the sidechain, mod or
+tempo buses exists outside the click test; one is needed to hear them.
 
 Smaller open items:
 
 - Scenes saved before step 4 do not mention the input and send-to-send
+  params, and those from before step 6 not the softcut, sidechain and mod
   params, so loading one leaves those as they are.
+- The tempo is not followed while no script is loaded.
+- Spec'd params are controls only: no options or switches without Lua.
+- A copy removed while a script runs leaves its params in the menu until the
+  next script; they do nothing.
+- The sidechain source switches without a fade.
 - Rack page ideas not done: moving an effect between chains with K1 + E2,
   clipping hold on the meters, per-effect presets on the page, K1 + K2 (free).
 - The page's param rows need a running script. Making fx params exist with
@@ -180,6 +196,16 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
 - **Restarting the shield can take two minutes**: a leftover `nullcast-rx`
   process holds up the stop of `norns-main` until systemd kills it after
   90 s. Poll the REPL until it answers instead of sleeping a fixed time.
+- **A classvar getter and a class method of the same name do not compile**
+  (`classvar <tempo` with `*tempo`), and that is the no-audio failure above.
+- **FxRack raises the server's input channels to 4 for every script.** The
+  first private bus number moves with it; an engine with hard-coded bus
+  numbers would notice.
+- **`audio.port_connect` marks the routing as altered**, so core resets every
+  route at the next script change and calls the restore hook. A route made
+  inside that hook does not set the mark again.
+- **Do not `clock.cancel` a coroutine id kept across a script change**: core
+  has already cancelled it and the id may now be the script's.
 - **SC dictionary `put` returns the dictionary**, so
   `x = d[k] ?? { d[k] = v }` does not give you `v`.
 - **Mod load order is not alphabetical**, and `system_post_startup` can run

@@ -6,10 +6,24 @@
 //
 // The framework wraps the function with the chain I/O, mix, fades and tail
 // handling (see docs/DESIGN.md). Wrapper controls are prefixed fx_.
+//
+// With specs the unit needs no Lua: the rack makes a param of every control
+// that has one.
+//
+//   FxUnit.register(\mydelay, { |in, time = 0.3, fb = 0.4| ... },
+//       (tail: 4, title: "My Delay", specs: (time: [0.01, 2, \exp, 0, 0.3, "s"], fb: [0, 0.95])));
+//
+// Inside the function FxRack.key, .env, .mod(n), .tempo and .beat give the
+// sidechain signal, its envelope, the modulation buses and the clock.
+//
+// A second instance of a unit is a copy under the name <name>_2 (_3, ...): it
+// shares the SynthDef and has its own values and node. Copies are made when
+// first asked for, see *find.
 FxUnit {
 	classvar <all;
 
 	var <name, <func, <opts, <plugin;
+	var <base;   // the unit this is a copy of, or nil
 	var <params;
 	var <mix = 1, <bypass = 0, <tail = 0;
 	var <node, <chain, <index;
@@ -20,14 +34,38 @@ FxUnit {
 	}
 
 	// opts: tail (seconds the wet output rings after release), lag (default
-	// control lag), lags (Event of per-control lag or rate overrides).
+	// control lag), lags (Event of per-control lag or rate overrides), title,
+	// specs (Event of control name -> ControlSpec or anything asSpec takes),
+	// instances (how many copies the rack offers; the user can change it).
 	*register { |name, func, opts|
 		var unit = super.new.init(name.asSymbol, func, opts ?? { () }, nil);
 		all = all ?? { IdentityDictionary.new };
 		all[unit.name] = unit;
 		if(FxRack.ready) { unit.sendDef(FxRack.server) };
+		FxRack.unitsChanged;
 		^unit;
 	}
+
+	// The unit of that name. An unknown <name>_<n> whose <name> is a native
+	// unit becomes a copy of it.
+	*find { |name|
+		var unit, str, cut, source;
+		name = name.asSymbol;
+		unit = all[name];
+		if(unit.notNil) { ^unit };
+		str = name.asString;
+		cut = str.findBackwards("_");
+		if(cut.isNil or: { cut < 1 }) { ^nil };
+		if(str.drop(cut + 1).every(_.isDecDigit).not or: { cut + 1 >= str.size }) { ^nil };
+		source = all[str.keep(cut).asSymbol];
+		if(source.isNil or: { source.isLegacy } or: { source.base.notNil }) { ^nil };
+		unit = super.new.init(name, source.func, source.opts, nil);
+		unit.setBase(source);
+		all[name] = unit;
+		^unit;
+	}
+
+	setBase { |unit| base = unit }
 
 	// v1 plugin: an FxBase subclass instance with its own inBus/outBus SynthDef
 	*registerLegacy { |plugin|
@@ -54,7 +92,62 @@ FxUnit {
 
 	isLegacy { ^plugin.notNil }
 
-	defName { ^("fxu_" ++ name).asSymbol }
+	defName { ^("fxu_" ++ (base ? this).name).asSymbol }
+
+	argNames { ^if(func.isNil) { [] } { func.def.argNames.drop(1) } }
+
+	// control name -> ControlSpec, for the controls that have one: from opts,
+	// or a global spec of the same name. The default is the function's.
+	specs {
+		var given = opts[\specs] ?? { () };
+		var defaults = func.def.prototypeFrame;
+		var out = IdentityDictionary.new;
+		this.argNames.do { |n, i|
+			var spec = (given[n] ? n).asSpec;
+			if(spec.notNil) {
+				spec = spec.copy;
+				defaults[i + 1] !? { |d| if(d.isNumber) { spec.default = d } };
+				out[n] = spec;
+			};
+		};
+		^out;
+	}
+
+	// The unit as a Lua table, for the Lua side to build params from.
+	describe {
+		var specs = this.specs;
+		var quote = { |x| "\"" ++ x.asString.replace("\\", "\\\\").replace("\"", "\\\"") ++ "\"" };
+		var warp = { |spec|
+			case
+			{ spec.warp.isKindOf(ExponentialWarp) } { "exp" }
+			{ spec.warp.isKindOf(DbFaderWarp) } { "db" }
+			{ "lin" };
+		};
+		var list = this.argNames.select { |n| specs[n].notNil }.collect { |n|
+			var spec = specs[n];
+			"{ id = %, min = %, max = %, warp = %, step = %, default = %, units = % }".format(
+				quote.(n), spec.minval, spec.maxval, quote.(warp.(spec)), spec.step,
+				spec.default, quote.(spec.units ? ""));
+		};
+		^"{ name = %, title = %, instances = %, params = { % } }".format(
+			quote.(name), quote.(opts[\title] ? name), (opts[\instances] ? 1).asInteger,
+			list.join(", "));
+	}
+
+	// Every native unit, as a Lua file. Returns whether it could be written.
+	*writeUnits { |path|
+		var units = all.values.select { |u| u.isLegacy.not and: { u.base.isNil } };
+		var file;
+		units = units.sort { |a, b| a.name <= b.name };
+		File.mkdir(path.dirname);
+		file = File(path, "w");
+		if(file.isOpen.not) { ("fx: cannot write " ++ path).warn; ^false };
+		file.write("-- written by FxUnit when sclang starts; do not edit\nreturn {\n");
+		units.do { |u| file.write("  " ++ u.describe ++ ",\n") };
+		file.write("}\n");
+		file.close;
+		^true;
+	}
 
 	// shared output stage: returns [inputAmount, outputSignalFunc]
 	*gates { |gate, bypass, fade, tail, doneAction|
@@ -92,14 +185,15 @@ FxUnit {
 			wet = FxUnit.guard(FxUnit.stereo(wet));
 			m = Lag.kr(fx_mix, 0.05);
 			ReplaceOut.ar(fx_bus, (dry * (1 - (m * amt))) + (wet * m * life));
-		});
+		}, metadata: (specs: this.specs));
 	}
 
 	sendDef { |server|
 		if(this.isLegacy) {
 			plugin.addSynthdefs;
 		} {
-			this.buildDef.send(server);
+			// a copy runs its base's def
+			if(base.isNil) { this.buildDef.send(server) };
 		};
 	}
 
@@ -110,7 +204,7 @@ FxUnit {
 	// Start a node for this unit. Call inside a server bundle.
 	start { |argChain, argIndex, target, addAction|
 		var server = FxRack.server;
-		var wrapperArgs;
+		var wrapperArgs, busArgs;
 		chain = argChain;
 		index = argIndex;
 		gen = gen + 1;
@@ -122,6 +216,8 @@ FxUnit {
 			\fx_fade, FxRack.fade,
 			\fx_tail, tail
 		];
+		// the shared buses, for units that read them; see FxRack.key
+		busArgs = [\fx_key, FxRack.keyBus.index, \fx_ctl, FxRack.ctlBus.index];
 		if(this.isLegacy) {
 			var inBus = Bus.audio(server, 2);
 			var wetBus = Bus.audio(server, 2);
@@ -133,7 +229,7 @@ FxUnit {
 			g.onFree { inBus.free; wetBus.free };
 			node = g;
 		} {
-			node = Synth.new(this.defName, wrapperArgs ++ params.asPairs, target, addAction);
+			node = Synth.new(this.defName, wrapperArgs ++ busArgs ++ params.asPairs, target, addAction);
 		};
 		if(bypass > 0) { this.schedulePause };
 		^node;

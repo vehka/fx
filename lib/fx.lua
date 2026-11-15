@@ -14,6 +14,11 @@
 --
 -- `params` may also be a function returning that list, called when a script
 -- starts. Param IDs are fx_<name>_<id> unless `param_id` is given.
+-- `instances = 2` offers two copies of the effect; the second is the unit
+-- <name>_2 with params fx_<name>_2_<id>. The user can change the number.
+--
+-- A unit whose SuperCollider side declares specs needs no Lua at all; see
+-- FxUnit.sc.
 --
 -- v1 plugins (fx:new{subpath=...}, :add_params(), :install()) keep working.
 
@@ -44,6 +49,30 @@ function Fx.register(def)
   return core.register(def)
 end
 
+--- Ask for a rack from a script's init. Nothing is required of the user:
+--
+--   local ok, fx = pcall(require, 'fx/lib/fx')
+--   if ok then
+--     fx.request{
+--       insert = { "mydelay", { "drive", mix = 0.4, gain = 2 } },
+--       a = { "reverb" },
+--       params = { fx_send_a_level = 0.3 },
+--     }
+--   end
+--
+-- Each chain (insert, a, b) is a list of effects in slot order: a name, or a
+-- table of the name and values for its dry/wet (`mix`), `bypass` and own
+-- params. Naming an effect twice uses a second copy if there is one. `params`
+-- sets any fx param by id. A string instead of a table names a saved rack.
+--
+-- It is a request: the fx values of the PSET the script loads win, and so
+-- does a rack the user already has running (with "keep rack" on), unless the
+-- table has `replace = true`. Effects that are not installed are skipped.
+-- Returns false when the mod is not enabled or the request was not applied.
+function Fx.request(spec)
+  return core.request(spec)
+end
+
 ----------------------------------------------------------------------------
 -- v1 API
 
@@ -65,6 +94,7 @@ function Fx:add_params() end
 
 local function bind(self, id, key)
   local name = self.unit.name
+  self.unit.param_key[key] = id
   core.bind(id, function(value) core.set(name, key, value) end, self.unit)
 end
 

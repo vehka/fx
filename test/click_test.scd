@@ -4,7 +4,7 @@
 //   test/run_sc.sh
 (
 var threshold = 0.1;
-var seconds = 20;
+var seconds = 27;
 var failures = List.new;
 var check = { |label, cond| if(cond.not) { failures.add(label) }; ("  " ++ if(cond) { "ok   " } { "FAIL " } ++ label).postln };
 var maxStep = { |data, from, to|
@@ -41,11 +41,17 @@ FxUnit.register(\echo, { |in, time = 0.11, fb = 0.5|
 FxUnit.register(\mono, { |in| in[0] * 0.5 });
 FxUnit.register(\soft, { |in| in * 0.5 });
 FxUnit.register(\unity, { |in| in });
+// units that read the shared buses, the first one described by specs alone
+FxUnit.register(\duck, { |in, depth = 1, freq = 440| in * (1 - (FxRack.env * depth).clip(0, 1)) },
+	(title: "Duck \"it\"", instances: 2, specs: (depth: [0, 1])));
+FxUnit.register(\modamp, { |in| in * FxRack.mod(2) });
+FxUnit.register(\tempoamp, { |in| in * (FxRack.tempo / 240) });
 
 fork { try {
 	var s = Server.default, buf, src, inSrc, rec, data, t0, at, mark = 0, marks = ();
 	var step = { |name, dur, f| marks[name] = mark; f.value; dur.wait; mark = mark + dur };
 	var meterDry, meterDrive, meterCount = 0, lastMeter;
+	var copies, unitsPath, unitsText;
 	// stands in for matron: keeps the last /fx/meter message
 	FxRack.matron = (sendMsg: { |self ... msg| lastMeter = msg; meterCount = meterCount + 1 });
 	s.bootSync;
@@ -125,6 +131,40 @@ fork { try {
 	});
 	step.(\fbOff, 1.0, { FxRack.clear; FxRack.sends[\a].set(\level, 0); src.set(\gate, 0) });
 	marks[\fbEnd] = mark;
+	// softcut as a source: its outputs arrive on the server's inputs 3 and 4
+	step.(\cut, 0.5, {
+		inSrc = Synth(\testSrc, [\out, FxRack.cutBuses[0]], s.defaultGroup, \addToHead);
+		FxRack.setSoftcut(1);
+	});
+	step.(\cutOff, 0.4, { FxRack.setSoftcut(0); inSrc.set(\gate, 0) });
+	// sidechain: the audio inputs, not heard themselves, duck the engine
+	step.(\keyDry, 0.5, {
+		src = Synth(\testSrc, [\out, 0], s.defaultGroup, \addToHead);
+		FxRack.place(\insert, 1, \duck);
+		FxRack.setKey(\src, 2);
+	});
+	step.(\keyOn, 0.5, {
+		inSrc = Synth(\testSrc, [\out, FxRack.inBuses[0]], s.defaultGroup, \addToHead);
+	});
+	step.(\keyOff, 0.6, { inSrc.set(\gate, 0) });
+	// modulation bus and tempo
+	step.(\mod, 0.5, { FxRack.setKey(\src, 0); FxRack.setMod(2, 0.5); FxRack.place(\insert, 1, \modamp) });
+	step.(\tempo, 0.5, { FxRack.setTempo(60); FxRack.place(\insert, 1, \tempoamp) });
+	// two instances of one unit, each with its own value
+	step.(\copies, 0.5, {
+		FxUnit.all[\drive].set(\drive, 1);
+		FxRack.place(\insert, 1, \drive);
+		FxRack.place(\insert, 2, \drive_2);
+		FxUnit.find(\drive_2).set(\drive, 0.5);
+		FxUnit.find(\drive_2).set(\mix, 1);
+	});
+	copies = [FxRack.insert.slots[1], FxRack.insert.slots[2]];
+	copies = copies ++ copies.collect { |u| u !? { u.node } };
+	step.(\copiesOff, 0.4, { FxRack.clear; src.set(\gate, 0) });
+	unitsPath = PathName.tmp +/+ "fx_units_test_%.lua".format(Date.getDate.stamp);
+	FxUnit.writeUnits(unitsPath);
+	unitsText = File.readAllString(unitsPath);
+	File.delete(unitsPath);
 	// a deliberately abrupt change, to prove the detector sees clicks
 	step.(\resume, 0.4, { src = Synth(\testSrc, [\out, 0], s.defaultGroup, \addToHead) });
 	step.(\hardCut, 0.4, { Synth(\testHard, target: FxRack.insertGroup) });
@@ -163,6 +203,32 @@ fork { try {
 		peak.(data, marks[\fbHot], marks[\fbEnd]) < 2.5);
 	check.("and stops when the rack is cleared (rms %)".format(rms.(data, marks[\fbEnd] - 0.3, marks[\fbEnd] - 0.05).round(0.00001)),
 		rms.(data, marks[\fbEnd] - 0.3, marks[\fbEnd] - 0.05) < 0.0005);
+	check.("softcut reaches the output (rms %)".format(rms.(data, marks[\cut] + 0.2, marks[\cut] + 0.45).round(0.001)),
+		rms.(data, marks[\cut] + 0.2, marks[\cut] + 0.45) > 0.15);
+	check.("and is silent at level 0", rms.(data, marks[\keyDry] - 0.15, marks[\keyDry] - 0.02) < 0.0005);
+	check.("an idle sidechain leaves the signal alone (rms %)".format(rms.(data, marks[\keyDry] + 0.2, marks[\keyDry] + 0.45).round(0.001)),
+		rms.(data, marks[\keyDry] + 0.2, marks[\keyDry] + 0.45) > (rms.(data, 0.1, 0.4) * 0.95));
+	check.("the audio input as the key ducks it, unheard (rms %)".format(rms.(data, marks[\keyOn] + 0.2, marks[\keyOn] + 0.45).round(0.001)),
+		(rms.(data, marks[\keyOn] + 0.2, marks[\keyOn] + 0.45) / rms.(data, 0.1, 0.4)).inclusivelyBetween(0.3, 0.75));
+	check.("and lets go when the key stops (rms %)".format(rms.(data, marks[\keyOff] + 0.4, marks[\keyOff] + 0.55).round(0.001)),
+		rms.(data, marks[\keyOff] + 0.4, marks[\keyOff] + 0.55) > (rms.(data, 0.1, 0.4) * 0.9));
+	check.("a modulation bus reaches a unit (ratio %)".format((rms.(data, marks[\mod] + 0.25, marks[\mod] + 0.45) / rms.(data, 0.1, 0.4)).round(0.01)),
+		((rms.(data, marks[\mod] + 0.25, marks[\mod] + 0.45) / rms.(data, 0.1, 0.4)) - 0.5).abs < 0.05);
+	check.("and so does the tempo (ratio %)".format((rms.(data, marks[\tempo] + 0.25, marks[\tempo] + 0.45) / rms.(data, 0.1, 0.4)).round(0.01)),
+		((rms.(data, marks[\tempo] + 0.25, marks[\tempo] + 0.45) / rms.(data, 0.1, 0.4)) - 0.25).abs < 0.05);
+	check.("a second instance is its own unit and node, on the same def",
+		copies.every(_.notNil) and: { copies[0] !== copies[1] } and: { copies[2] !== copies[3] }
+			and: { copies[1].defName == copies[0].defName } and: { copies[1].params[\drive] == 0.5 }
+			and: { copies[0].params[\drive] == 1 });
+	check.("both instances are heard (ratio %)".format((rms.(data, marks[\copies] + 0.25, marks[\copies] + 0.45) / rms.(data, 0.1, 0.4)).round(0.01)),
+		(rms.(data, marks[\copies] + 0.25, marks[\copies] + 0.45) / rms.(data, 0.1, 0.4)).inclusivelyBetween(0.3, 0.6));
+	check.("the units file lists native units with the params that have a spec",
+		unitsText.contains("name = \"duck\", title = \"Duck \\\"it\\\"\", instances = 2")
+			and: { unitsText.contains("{ id = \"depth\", min = 0, max = 1, warp = \"lin\", step = 0.0, default = 1, units = \"\" }") }
+			and: { unitsText.contains("\"freq\", min = 20, max = 20000, warp = \"exp\"") }
+			and: { unitsText.contains("default = 440") });
+	check.("but not v1 plugins or copies",
+		unitsText.contains("legacy").not and: { unitsText.contains("drive_2").not });
 	check.("detector sees a hard cut (max step %)".format(maxStep.(data, marks[\hardCut] - 0.05, marks[\stop]).round(0.0001)),
 		maxStep.(data, marks[\hardCut] - 0.05, marks[\stop]) > threshold);
 

@@ -47,7 +47,7 @@ local function sorted(set)
   return list
 end
 
-local function write(path, header, ids)
+local function write(path, header, ids, as)
   local fd = io.open(path, "w+")
   if not fd then
     print("fx: cannot write " .. path)
@@ -56,7 +56,7 @@ local function write(path, header, ids)
   fd:write("-- " .. header .. "\n")
   for _, id in ipairs(ids) do
     if params.lookup[id] then
-      fd:write(string.format("%q: %s\n", id, tostring(params:get(id))))
+      fd:write(string.format("%q: %s\n", as and as[id] or id, tostring(params:get(id))))
     end
   end
   fd:close()
@@ -66,10 +66,23 @@ end
 ----------------------------------------------------------------------------
 -- unit presets
 
-local function user_dir(unit) return root() .. "presets/" .. unit.name .. "/" end
+-- A copy of a unit shares the presets of its base: the directory, and the
+-- param ids in the files, are the base's.
+local function base_name(unit) return unit.base or unit.name end
+
+-- copy's param id -> base's, or nil for a unit that is not a copy
+local function base_ids(unit)
+  local base = unit.base and core.units[unit.base]
+  if not base then return nil end
+  local map = {}
+  for i, id in ipairs(unit.param_ids or {}) do map[id] = base.param_ids[i] end
+  return map
+end
+
+local function user_dir(unit) return root() .. "presets/" .. base_name(unit) .. "/" end
 
 local function factory_dir(unit)
-  return unit.plugin_dir and (unit.plugin_dir .. "/presets/" .. unit.name .. "/") or nil
+  return unit.plugin_dir and (unit.plugin_dir .. "/presets/" .. base_name(unit) .. "/") or nil
 end
 
 function Presets.list(unit)
@@ -96,7 +109,7 @@ function Presets.save(unit, name)
   name = clean(name)
   if name == "" then return nil end
   util.make_dir(user_dir(unit))
-  if write(user_dir(unit) .. name .. ".fxp", "fx preset: " .. unit.name, unit.param_ids or {}) then
+  if write(user_dir(unit) .. name .. ".fxp", "fx preset: " .. base_name(unit), unit.param_ids or {}, base_ids(unit)) then
     return name
   end
   return nil
@@ -107,7 +120,13 @@ function Presets.load(unit, name, silent)
   if not path then return false end
   local accept = {}
   for _, id in ipairs(unit.param_ids or {}) do accept[id] = true end
-  core.read_file(path, accept, silent)
+  local rename
+  local as = base_ids(unit)
+  if as then
+    rename = {}
+    for id, base_id in pairs(as) do rename[base_id] = id end
+  end
+  core.read_file(path, accept, silent, rename)
   return true
 end
 

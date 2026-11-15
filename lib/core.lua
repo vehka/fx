@@ -28,7 +28,12 @@ Core.ids = {}        -- fx param ids of the running script, in menu order
 Core.is_fx_id = {}
 Core.active = false  -- true while the running script has fx params
 Core.pset_file = nil -- PSET the script read during init
-Core.settings = { persist = true, fade = 0.05 }
+Core.settings = { persist = true, fade = 0.05, instances = {} } -- instances: unit name -> copies
+Core.mods = 4          -- modulation buses, as FxRack.numMods
+Core.max_instances = 4
+Core.softcut = false   -- softcut is patched through the rack
+Core.requested = nil   -- the rack the running script asked for in init
+Core.enabled = false   -- set by mod.lua: the mod is loaded, not just installed
 
 local chain_by_id = {}
 for _, c in ipairs(Core.chains) do
@@ -78,10 +83,94 @@ function Core.register(unit)
   end
   unit.label = unit.label or unit.name:gsub("^fx_", "")
   unit.param_ids = {}
+  unit.param_key = {} -- the plugin's own name of a param -> param id
   unit.mix = 1     -- dry/wet and bypass as SC has them; they outlive the params
   unit.bypass = 0
   Core.units[unit.name] = unit
   return unit
+end
+
+function Core.unregister(name)
+  if not Core.units[name] then return end
+  Core.place(name, nil)
+  Core.units[name] = nil
+  for i, v in ipairs(Core.names) do
+    if v == name then table.remove(Core.names, i) break end
+  end
+end
+
+--- How many instances of a unit the rack offers: the user's choice, else
+-- what the plugin declared, else one. v1 plugins have one.
+function Core.instances(name)
+  local unit = Core.units[name]
+  if not unit or unit.legacy or unit.base then return 1 end
+  local n = tonumber(Core.settings.instances[name]) or tonumber(unit.instances) or 1
+  return util.clamp(math.floor(n), 1, Core.max_instances)
+end
+
+--- Make the copies match Core.instances. A copy is a unit of its own named
+-- <name>_<n>, with the same params under ids of its own; SC makes its side
+-- when the name is first used. Params of a new copy exist from the next
+-- script start.
+function Core.apply_instances()
+  local names = {}
+  for _, name in ipairs(Core.names) do table.insert(names, name) end
+  for _, name in ipairs(names) do
+    local unit = Core.units[name]
+    if unit and not unit.base then
+      local want = Core.instances(name)
+      for i = 2, Core.max_instances do
+        local copy = name .. "_" .. i
+        local existing = Core.units[copy]
+        if existing and existing.base ~= name then
+          -- a plugin of its own that happens to have this name
+        elseif i <= want then
+          if not existing then
+            existing = Core.register{ name = copy, base = name, instance = i,
+              label = unit.label .. " " .. i, title = (unit.title or unit.label) .. " " .. i,
+              plugin_dir = unit.plugin_dir }
+          end
+          existing.params = unit.params
+        elseif existing then
+          Core.unregister(copy)
+        end
+      end
+    end
+  end
+end
+
+function Core.set_instances(name, n)
+  local unit = Core.units[name]
+  if not unit or unit.legacy or unit.base then return end
+  Core.settings.instances[name] = util.clamp(n, 1, Core.max_instances)
+  Core.apply_instances()
+end
+
+--- Units that are a single .sc file have no Lua: sclang writes what it knows
+-- of every native unit to a file when it starts (FxUnit.writeUnits), and
+-- those no mod registered are taken from there. A Lua registration wins.
+function Core.load_units_file()
+  local chunk = loadfile(_path.data .. "fx/units.lua", "t", {})
+  local ok, list = pcall(chunk or error)
+  if ok and type(list) == "table" then
+    for _, d in ipairs(list) do
+      if type(d) == "table" and type(d.name) == "string" then
+        local unit = Core.units[d.name] or Core.register{ name = d.name, auto = true }
+        if unit.auto then
+          unit.title = d.title
+          unit.instances = d.instances
+          unit.params = {}
+          for _, p in ipairs(d.params or {}) do
+            table.insert(unit.params, {
+              id = p.id, name = p.name or p.id,
+              spec = controlspec.new(p.min, p.max, p.warp, p.step, p.default, p.units ~= "" and p.units or nil),
+            })
+          end
+        end
+      end
+    end
+  end
+  Core.apply_instances()
 end
 
 ----------------------------------------------------------------------------
@@ -130,6 +219,7 @@ end
 -- An occupant moves to the first free slot of the chain, or out if it is
 -- full; with `replace` it always leaves the rack.
 function Core.place(name, chain_id, index, replace)
+  if not Core.units[name] then return end
   local before = snapshot()
   local old_chain, old_index = Core.locate(name)
   if old_chain == chain_id and old_index == index then return end
@@ -324,7 +414,9 @@ function Core.add_slot_params(unit, slot_id, slot_name, mix_id)
 end
 
 local function add_native_param(unit, p)
-  local id = p.param_id or ("fx_" .. unit.name .. "_" .. p.id)
+  local id = "fx_" .. unit.name .. "_" .. p.id
+  if p.param_id then id = unit.base and (p.param_id .. "_" .. unit.instance) or p.param_id end
+  unit.param_key[p.id] = id
   local kind = p.type or "control"
   local name = p.name or p.id
   if kind == "control" then
@@ -423,12 +515,91 @@ local function add_rack_params()
   end
 end
 
+----------------------------------------------------------------------------
+-- softcut as a source. Normally softcut's outputs go to crone's mixer and
+-- never pass SuperCollider. With the routing functions of norns 3.x they can
+-- be patched to the server's third and fourth input instead, where FxRack
+-- adds them to the main bus. Without those functions (2.x) there is no
+-- softcut param and nothing here runs.
+
+local CUT_ROUTES = {
+  -- softcut output, its default destination, the rack's input
+  { "softcut:output_1", "crone:input_3", "SuperCollider:in_3" },
+  { "softcut:output_2", "crone:input_4", "SuperCollider:in_4" },
+}
+
+function Core.softcut_available()
+  return audio ~= nil and audio.port_connect ~= nil and audio.port_disconnect ~= nil
+end
+
+local function has_port(name)
+  if not audio.input_ports then return true end
+  for _, port in ipairs(audio.input_ports() or {}) do
+    if port == name then return true end
+  end
+  return false
+end
+
+local function route_softcut(on)
+  for _, r in ipairs(CUT_ROUTES) do
+    if on then
+      audio.port_disconnect(r[1], r[2])
+      audio.port_connect(r[1], r[3])
+    else
+      audio.port_disconnect(r[1], r[3])
+      audio.port_connect(r[1], r[2])
+    end
+  end
+end
+
+function Core.set_softcut(on)
+  if not Core.softcut_available() then return end
+  on = on and true or false
+  if on and not has_port(CUT_ROUTES[1][3]) then
+    print("fx: SuperCollider has no inputs for softcut; restart norns with fx enabled")
+    on = false
+  end
+  if on ~= Core.softcut then
+    Core.softcut = on
+    route_softcut(on)
+  end
+  send("/fx/softcut", { on and 1 or 0 })
+end
+
+--- For the audio_post_restore_default_routing hook: core has just put every
+-- route back to its default, which it does when a script ends.
+function Core.restore_routing()
+  if Core.softcut and Core.softcut_available() then route_softcut(true) end
+end
+
 local function add_input_params()
-  params:add_group("fx_input", "fx input", 2)
+  local with_softcut = Core.softcut_available()
+  params:add_group("fx_input", "fx input", with_softcut and 3 or 2)
   params:add_control("fx_input_level", "input level", controlspec.new(0, 1, 'lin', 0, 0))
   Core.bind("fx_input_level", function(v) send("/fx/input", { "level", v }) end)
   params:add_option("fx_input_mode", "input mode", { "stereo", "mono" }, 1)
   Core.bind("fx_input_mode", function(v) send("/fx/input", { "mono", v - 1 }) end)
+  if with_softcut then
+    params:add_option("fx_softcut", "softcut", { "to output", "through rack" }, 1)
+    Core.bind("fx_softcut", function(v) Core.set_softcut(v == 2) end)
+  end
+end
+
+-- The sidechain (key) signal and the modulation buses, which any effect may
+-- read; see FxRack.key and FxRack.mod. The softcut source comes last so the
+-- other choices keep their numbers where it is missing.
+local function add_control_params()
+  local sources = { "off", "rack input", "audio in", "send a", "send b" }
+  if Core.softcut_available() then table.insert(sources, "softcut") end
+  params:add_group("fx_control", "fx sidechain + mod", 2 + Core.mods)
+  params:add_option("fx_key_source", "sidechain", sources, 1)
+  Core.bind("fx_key_source", function(v) send("/fx/key", { "src", v - 1 }) end)
+  params:add_control("fx_key_gain", "sc gain", controlspec.new(0, 8, 'lin', 0, 1))
+  Core.bind("fx_key_gain", function(v) send("/fx/key", { "gain", v }) end)
+  for i = 1, Core.mods do
+    params:add_control("fx_mod_" .. i, "mod " .. i, controlspec.new(0, 1, 'lin', 0, 0))
+    Core.bind("fx_mod_" .. i, function(v) send("/fx/mod", { i, v }) end)
+  end
 end
 
 local function add_send_params()
@@ -582,6 +753,7 @@ function Core.add_params()
   add_rack_params()
   add_input_params()
   add_send_params()
+  add_control_params()
   add_preset_params()
   Core.active = true
 end
@@ -590,8 +762,8 @@ end
 -- restoring values
 
 --- Read "id": value lines, setting the params whose id is in `accept`.
--- Returns how many were set.
-function Core.read_file(filename, accept, silent)
+-- `rename` maps an id in the file to the id to set. Returns how many were set.
+function Core.read_file(filename, accept, silent, rename)
   local fd = io.open(filename, "r")
   if not fd then return 0 end
   io.close(fd)
@@ -600,6 +772,7 @@ function Core.read_file(filename, accept, silent)
     local id, value = string.match(line, "(\".-\")%s*:%s*(.*)")
     if id and value then
       id = id:gsub('^"', ''):gsub('"$', '')
+      if rename then id = rename[id] or id end
       local index = params.lookup[id]
       local number = tonumber(value)
       if accept[id] and index and number then
@@ -621,9 +794,84 @@ local function bang_fx_params()
   end
 end
 
+----------------------------------------------------------------------------
+-- a rack requested by the script
+
+-- the unit of that name, or a copy of it, that this request has not used yet
+local function free_instance(wanted, used)
+  if type(wanted) ~= "string" then return nil end
+  if Core.units[wanted] and not used[wanted] then return wanted end
+  for i = 2, Core.max_instances do
+    local copy = Core.units[wanted .. "_" .. i]
+    if copy and copy.base == wanted and not used[copy.name] then return copy.name end
+  end
+  return nil
+end
+
+local function set_unit_param(unit, key, value)
+  local id = unit.param_key[key]
+  if key == "mix" then id = unit.mix_id elseif key == "bypass" then id = unit.bypass_id end
+  id = id or (Core.is_fx_id[key] and key)
+  if id and params.lookup[id] then params:set(id, value) end
+end
+
+--- Build the rack a script asked for; see Fx.request for the format. Needs
+-- the fx params. A rack that is not empty is left alone unless the request
+-- says `replace`. Returns whether it was applied.
+function Core.apply_request(spec)
+  if type(spec) == "string" then
+    return require('fx/lib/presets').load_scene(spec)
+  elseif type(spec) ~= "table" then
+    return false
+  end
+  if not rack_is_empty() then
+    if not spec.replace then return false end
+    local names = {}
+    for _, name in ipairs(Core.names) do table.insert(names, name) end
+    for _, name in ipairs(names) do Core.place(name, nil) end
+  end
+  local used = {}
+  for _, c in ipairs(Core.chains) do
+    local list = spec[c.id]
+    if type(list) == "string" then list = { list } end
+    for i, entry in ipairs(list or {}) do
+      if i > c.size then break end
+      local wanted = type(entry) == "table" and entry[1] or entry
+      local name = free_instance(wanted, used)
+      if name then
+        used[name] = true
+        Core.place(name, c.id, i, true)
+        if type(entry) == "table" then
+          for key, value in pairs(entry) do
+            if key ~= 1 then set_unit_param(Core.units[name], key, value) end
+          end
+        end
+      else
+        print("fx: requested effect " .. tostring(wanted) .. " is not available")
+      end
+    end
+  end
+  for id, value in pairs(spec.params or {}) do
+    if Core.is_fx_id[id] and params.lookup[id] then params:set(id, value) end
+  end
+  Core.sync_params()
+  return true
+end
+
+--- Called by a script through Fx.request: during init the request waits for
+-- the fx params, later it is applied at once.
+function Core.request(spec)
+  if not Core.enabled then return false end
+  if Core.active then return Core.apply_request(spec) end
+  Core.requested = spec
+  return true
+end
+
 --- Give the new script's fx params their values and make SC match.
 -- Precedence: the live rack (persist on) > fx values in the PSET the script
--- read > the default scene > each unit's default preset > built-in defaults.
+-- read > the rack the script requested > the default scene > each unit's
+-- default preset > built-in defaults. A request also fills an empty live
+-- rack, and replaces one if it says so.
 function Core.restore()
   local presets = require 'fx/lib/presets'
   presets.apply_defaults()
@@ -643,11 +891,17 @@ function Core.restore()
       if unit.bypass_id and params.lookup[unit.bypass_id] then params:set(unit.bypass_id, unit.bypass, true) end
     end
     Core.sync_params()
+    if Core.requested then Core.apply_request(Core.requested) end
   else
     local found = 0
     if Core.pset_file then found = Core.read_file(Core.pset_file, Core.is_fx_id) end
-    if found == 0 then presets.load_scene(presets.DEFAULT) end
+    if found == 0 then
+      if not (Core.requested and Core.apply_request(Core.requested)) then
+        presets.load_scene(presets.DEFAULT)
+      end
+    end
   end
+  Core.requested = nil
   Core.push_rack()
   bang_fx_params()
   Core.sync_params()
@@ -668,11 +922,40 @@ end
 function Core.ensure()
   send("/fx/ensure")
   send("/fx/fade", { Core.settings.fade })
+  Core.send_tempo(true)
+end
+
+----------------------------------------------------------------------------
+-- tempo: SC keeps the norns clock's tempo on a control bus (FxRack.tempo)
+
+function Core.send_tempo(force)
+  if not (clock and clock.get_tempo) then return end
+  local bpm = clock.get_tempo()
+  if bpm and (force or bpm ~= Core.tempo) then
+    Core.tempo = bpm
+    send("/fx/tempo", { bpm })
+  end
+end
+
+--- Follow tempo changes from any clock source. Core cancels every clock
+-- when a script ends, after the cleanup hook, so this is started again at
+-- each script start; with no script loaded the tempo is not followed.
+function Core.watch_tempo()
+  if not (clock and clock.run) then return end
+  if Core.tempo_clock then return end
+  Core.tempo_clock = clock.run(function()
+    while true do
+      Core.send_tempo()
+      clock.sleep(0.5)
+    end
+  end)
 end
 
 function Core.pre_init()
   Core.ensure()
   Core.pset_file = nil
+  Core.requested = nil
+  Core.load_units_file()
   -- per-script param bookkeeping; reset here, before any plugin adds params
   Core.ids = {}
   Core.is_fx_id = {}
@@ -680,6 +963,7 @@ function Core.pre_init()
     local unit = Core.units[name]
     unit.slot_id, unit.mix_id, unit.bypass_id, unit.params_added = nil, nil, nil, false
     unit.param_ids = {}
+    unit.param_key = {}
   end
   -- note which PSET the script reads in init; its fx values are applied once
   -- the fx params exist. Instance override, removed again in post_init.
@@ -694,6 +978,7 @@ function Core.post_init()
   rawset(params, "read", nil)
   Core.add_params()
   Core.restore()
+  Core.watch_tempo()
 end
 
 function Core.post_cleanup()
@@ -701,7 +986,10 @@ function Core.post_cleanup()
   Core.active = false
   Core.refresh_scenes = nil
   Core.pset_file = nil
+  Core.requested = nil
+  Core.tempo_clock = nil -- core cancels it after this hook
   if not Core.settings.persist then
+    Core.set_softcut(false)
     Core.clear_rack()
     Core.live = {}
     for _, name in ipairs(Core.names) do

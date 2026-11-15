@@ -42,6 +42,28 @@ params = paramset.new()
 local sent = {}
 osc = { send = function(to, path, args) table.insert(sent, { path = path, args = args or {} }) end }
 
+-- the routing functions of norns 3.x; routes records what was asked for
+local routes = {}
+audio = {
+  ports = { "SuperCollider:in_1", "SuperCollider:in_2", "SuperCollider:in_3", "SuperCollider:in_4" },
+  input_ports = function() return audio.ports end,
+  port_connect = function(from, to) table.insert(routes, "+ " .. from .. " " .. to) return true end,
+  port_disconnect = function(from, to) table.insert(routes, "- " .. from .. " " .. to) return true end,
+}
+
+-- a clock whose coroutines the test steps by hand
+local tempo, clocks = 120, {}
+clock = {
+  get_tempo = function() return tempo end,
+  run = function(f)
+    local co = coroutine.create(f)
+    table.insert(clocks, co)
+    coroutine.resume(co)
+    return #clocks
+  end,
+  sleep = function() coroutine.yield() end,
+}
+
 local hooks = {}
 local page, redraws, exits = nil, 0, 0
 package.preload['core/mods'] = function()
@@ -604,6 +626,172 @@ core.settings.persist = false
 stop_script()
 check("persist off resets dry/wet and bypass at cleanup",
   core.units.echo.bypass == 0 and core.units.echo.mix == 1 and has("/fx/set", "echo bypass 0"))
+
+-- step 6 ---------------------------------------------------------------------
+-- softcut as a source
+start_script(script_init)
+check("there is a softcut param when core has the routing functions",
+  params.lookup["fx_softcut"] ~= nil and params:get("fx_softcut") == 1 and #routes == 0)
+params:set("fx_softcut", 2)
+check("through rack: softcut is patched to SuperCollider instead of crone",
+  table.concat(routes, "|") == "- softcut:output_1 crone:input_3|+ softcut:output_1 SuperCollider:in_3"
+    .. "|- softcut:output_2 crone:input_4|+ softcut:output_2 SuperCollider:in_4"
+  and has("/fx/softcut", "1"))
+routes = {}
+run_hook("audio_post_restore_default_routing")
+check("and patched again after core restored the default routes",
+  #routes == 4 and routes[2] == "+ softcut:output_1 SuperCollider:in_3")
+routes = {}
+stop_script()
+check("persist off puts softcut back at cleanup",
+  routes[1] == "- softcut:output_1 SuperCollider:in_3" and routes[2] == "+ softcut:output_1 crone:input_3"
+  and core.softcut == false and has("/fx/softcut", "0"))
+routes = {}
+run_hook("audio_post_restore_default_routing")
+check("and the hook then leaves the defaults alone", #routes == 0)
+
+audio.ports = { "SuperCollider:in_1", "SuperCollider:in_2" }
+start_script(script_init)
+params:set("fx_softcut", 2)
+check("nothing is repatched when SuperCollider has no inputs for it", #routes == 0 and core.softcut == false)
+stop_script()
+audio.ports[3], audio.ports[4] = "SuperCollider:in_3", "SuperCollider:in_4"
+
+-- an older norns: no routing functions
+local port_connect = audio.port_connect
+audio.port_connect = nil
+start_script(script_init)
+check("without audio.port_connect there is no softcut param and the rest is there",
+  params.lookup["fx_softcut"] == nil and params.lookup["fx_input_level"] ~= nil
+  and #params:lookup_param("fx_key_source").options == 5)
+core.set_softcut(true)
+check("and softcut routing is skipped", #routes == 0 and core.softcut == false and not has("/fx/softcut", "1"))
+stop_script()
+audio.port_connect = port_connect
+
+-- sidechain, modulation buses, tempo
+start_script(script_init)
+check("the sidechain can be softcut where it can be routed",
+  params:lookup_param("fx_key_source").options[6] == "softcut" and has("/fx/key", "src 0"))
+params:set("fx_key_source", 3)
+params:set("fx_mod_2", 0.5)
+check("sidechain source and mod values go to SC", has("/fx/key", "src 2") and has("/fx/mod", "2 0.5"))
+check("the tempo is sent when a script starts", has("/fx/tempo", "120"))
+sent = {}
+coroutine.resume(clocks[#clocks])
+check("and not again while it stays the same", #messages("/fx/tempo") == 0)
+tempo = 90
+coroutine.resume(clocks[#clocks])
+check("a tempo change is followed", has("/fx/tempo", "90"))
+stop_script()
+
+-- units from single .sc files: sclang writes this file
+os.execute("mkdir -p " .. tmp .. "/data/fx")
+do
+  local f = io.open(tmp .. "/data/fx/units.lua", "w")
+  f:write([[return {
+  { name = "echo", title = "echo", instances = 1, params = { { id = "wrong", min = 0, max = 1, warp = "lin", step = 0.0, default = 0, units = "" } } },
+  { name = "shimmer", title = "Shimmer", instances = 2, params = { { id = "size", min = 0.1, max = 10, warp = "exp", step = 0.0, default = 2, units = "s" }, { id = "mix2", min = 0, max = 1, warp = "lin", step = 0.0, default = 0.5, units = "" } } },
+}
+]])
+  f:close()
+end
+start_script(script_init)
+check("a unit known only from the units file gets params from its specs",
+  core.units.shimmer ~= nil and near(params:get("fx_shimmer_size"), 2) and params.lookup["fx_shimmer_mix2"] ~= nil
+  and params:lookup_param("fx_shimmer_size").controlspec.maxval == 10 and has("/fx/set", "shimmer size 2.0"))
+check("a unit registered from Lua keeps its Lua params",
+  params.lookup["fx_echo_wrong"] == nil and params.lookup["fx_echo_mode"] ~= nil)
+
+-- multiple instances
+check("a declared second instance is a unit with params of its own",
+  core.units.shimmer_2 ~= nil and core.units.shimmer_2.label == "shimmer 2"
+  and params.lookup["fx_shimmer_2_size"] ~= nil and core.units.shimmer_3 == nil)
+sent = {}
+core.clear_rack()
+params:set("fx_shimmer_slot", 4)
+params:set("fx_shimmer_2_slot", 4)
+params:set("fx_shimmer_2_size", 5)
+check("both instances can be in the rack, each with its own values",
+  core.rack.insert[1] == "shimmer" and core.rack.insert[2] == "shimmer_2"
+  and has("/fx/slot", "insert 2 shimmer_2") and has("/fx/set", "shimmer_2 size 5.0")
+  and near(params:get("fx_shimmer_size"), 2))
+presets.save(core.units.shimmer_2, "big")
+check("a copy saves its presets as its base's",
+  presets.path(core.units.shimmer, "big") ~= nil
+  and io.open(presets.path(core.units.shimmer, "big")):read("*a"):find('"fx_shimmer_size": 5', 1, true) ~= nil)
+presets.load(core.units.shimmer, "big")
+params:set("fx_shimmer_2_size", 1)
+presets.load(core.units.shimmer_2, "big")
+check("and either instance loads them", near(params:get("fx_shimmer_size"), 5) and near(params:get("fx_shimmer_2_size"), 5))
+
+core.set_instances("fx_distortion", 2)
+check("v1 plugins have one instance", core.units.fx_distortion_2 == nil and core.instances("fx_distortion") == 1)
+-- on the page: the last row of an opened effect
+page.init()
+core.place("echo", "insert", 3)
+page.select("ins 3")
+page.key(1, 1) page.key(3, 1) page.key(1, 0)
+for _ = 1, 10 do page.enc(2, 1) end
+page.enc(3, 1)
+check("the page's copies row adds an instance, placeable at once",
+  core.instances("echo") == 2 and core.units.echo_2 ~= nil and pcall(page.redraw))
+page.key(2, 1)
+page.select("ins 4")
+page.key(1, 1)
+for _ = 1, 30 do page.enc(3, 1) end
+for _ = 1, 30 do page.enc(3, -1) end
+page.enc(3, 1) page.enc(3, 1) page.enc(3, 1) -- none, distortion, echo, echo 2
+page.key(1, 0)
+check("it is among the page's effects", core.rack.insert[4] == "echo_2" and has("/fx/slot", "insert 4 echo_2"))
+page.deinit()
+check("the number of copies is saved with the settings",
+  (tab.load(tmp .. "/data/fx/settings.data").instances or {}).echo == 2)
+stop_script()
+start_script(script_init)
+check("and its params exist from the next script start", params.lookup["fx_echo_2_time"] ~= nil)
+core.place("echo_2", "insert", 1)
+core.set_instances("echo", 1)
+check("removing a copy takes it out of the rack", core.units.echo_2 == nil and core.rack.insert[1] == nil)
+core.set_instances("echo", 2)
+stop_script()
+
+-- a rack requested by the script (no PSET is read here)
+local function requesting(spec)
+  return function()
+    params:add_number("script_param", "script param", 0, 10, 3)
+    check_request = fx.request(spec)
+  end
+end
+start_script(requesting{
+  insert = { "echo", { "echo", time = 1, mix = 0.5 }, "nosuch", "shimmer" },
+  a = "fx_distortion",
+  params = { fx_send_a_level = 0.3, script_param = 9 },
+})
+check("a requested rack is built when nothing else claims the rack",
+  check_request == true and core.rack.insert[1] == "echo" and core.rack.insert[2] == "echo_2"
+  and core.rack.insert[3] == nil and core.rack.insert[4] == "shimmer" and core.rack.a[1] == "fx_distortion"
+  and has("/fx/slot", "insert 2 echo_2"))
+check("with the values it names",
+  near(params:get("fx_echo_2_time"), 1) and near(params:get("fx_echo_2_mix"), 0.5) and near(params:get("fx_send_a_level"), 0.3)
+  and params:get("script_param") == 3 and has("/fx/set", "echo_2 time 1.0"))
+check("at run time a request leaves a rack in use alone", fx.request{ insert = { "fx_res" } } == false
+  and core.rack.insert[1] == "echo")
+check("unless it says replace", fx.request{ b = { "fx_res" }, replace = true } == true
+  and core.rack.insert[1] == nil and core.rack.b[1] == "fx_res")
+check("an unknown saved rack is not applied", fx.request("no such rack") == false)
+core.settings.persist = true
+stop_script()
+start_script(requesting{ insert = { "echo" } })
+check("a kept rack wins over a request", core.rack.insert[1] == nil and core.rack.b[1] == "fx_res")
+stop_script()
+start_script(requesting{ insert = { "echo" }, replace = true })
+check("but not over one that replaces", core.rack.insert[1] == "echo" and core.rack.b[1] == nil)
+stop_script()
+start_script(script_init)
+check("a request does not outlive its script", core.requested == nil and core.rack.insert[1] == "echo")
+core.settings.persist = false
+stop_script()
 
 os.execute("rm -rf " .. tmp)
 quiet_print(failures == 0 and ("PASS (" .. count .. " checks)") or ("FAILED: " .. failures .. " of " .. count))

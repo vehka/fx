@@ -1,7 +1,8 @@
 # fx v2 design
 
-Target: norns 3.x only (uses `audio.port_connect` and the
-`audio_post_restore_default_routing` hook for the later source-routing work).
+Target: norns 3.x. Softcut as a source uses `audio.port_connect` and the
+`audio_post_restore_default_routing` hook, which older versions (250926 and
+the like) do not have: there it is skipped, see "Softcut" below.
 v2 replaces v1 in the same `dust/code/fx` directory: both define
 `FxBase`/`FxSetup`, and two copies would stop sclang compiling.
 
@@ -30,7 +31,7 @@ v2 replaces v1 in the same `dust/code/fx` directory: both define
 ## Signal model
 
 ```
-sources: engine (bus 0) | audio inputs | cooperative per-voice sends | (later) softcut
+sources: engine (bus 0) | audio inputs | softcut | cooperative per-voice sends
 main:    input -> PRE taps -> pre sends -> INSERT chain -> POST taps -> post sends -> out
 send X:  tap level + other sends -> inlet -> chain -> return level -> main bus, pre or post insert
                                                    -> level into each other send
@@ -41,6 +42,8 @@ Node tree, inside one group placed directly after `context.og`:
 ```
 fx group
   input       audio inputs (context.in_b) into the main bus, level 0 by default
+  softcut     the server's inputs 3 and 4 into the main bus
+  key         the sidechain source onto the key bus, its envelope onto a control bus
   preTaps     tap synths of sends with tap = pre
   preSends    send groups whose return is pre-insert
   insert      main chain, in place on bus 0
@@ -131,7 +134,8 @@ so no param, does.
 
 - **Units** are registered once at mod load, by the v1 API
   (`fx:new{subpath=...}` + `add_params`) or the declarative v2 API
-  (`fx.register{name=..., params={...}}`). One instance per unit for now.
+  (`fx.register{name=..., params={...}}`), or read from the units file that
+  sclang writes (see "Single-file plugins").
 - **Params are plugin-centric with stable IDs**, so PSETs and PMAPs keep
   working. v1 IDs are unchanged.
 - **Choosing where an effect goes is scroll-then-confirm.** The stock params
@@ -196,8 +200,8 @@ them. The page reads the model and changes it only through the core
 agree.
 
 Rows, in signal order: `input`, the four inserts, then `send a` with its two
-slots and `send b` with its two, then `rack`, `save rack...` and the two
-settings.
+slots and `send b` with its two, then `sidechain`, `mod 1`, `rack`,
+`save rack...` and the two settings.
 
 | Control | Action |
 |---|---|
@@ -213,7 +217,8 @@ An opened row is a list of params in place of the rack list, with the meters
 still shown: for an effect its bypass and everything in `unit.param_ids`
 (dry/wet and its own params), for a send its tap, return, destination and
 send-to-send level, for the input its mode. Hidden params are left out, so a
-send effect has no dry/wet. E2 selects, E3 changes, K3 toggles a switch, K2
+send effect has no dry/wet. An opened effect ends with a `copies` row, which
+is not a param but the unit's number of instances. E2 selects, E3 changes, K3 toggles a switch, K2
 or K1 + K3 goes back. Params a v1 plugin adds without the helper API are not
 in `param_ids` and so not listed.
 
@@ -272,16 +277,104 @@ Files are `"id": value` lines, like a PSET.
   shared group is used because v1 plugin groups have a fixed size.
 - The preset and scene named `default` are applied when a script starts.
   Precedence: the live rack (persist on) > fx values in the PSET the script
-  read > default scene > each unit's default preset > built-in defaults.
+  read > the rack the script requested > default scene > each unit's default
+  preset > built-in defaults.
   Defaults are not re-applied when a unit is placed, so moving a unit never
   discards edits.
 
-## Later steps
+## Softcut
 
-6. Softcut as a source (extra SC inputs + JACK routes), sidechain and
-   modulation control buses, tempo sync, plugins as a single `.sc` file with
-   params read from SynthDef metadata, multiple instances per unit, a script
-   API to request a rack.
+Softcut is a JACK client of its own; crone mixes it in after SuperCollider.
+To get it into the rack its two outputs are disconnected from `crone:input_3/4`
+and connected to `SuperCollider:in_3/4`, where a second `fxInput` synth adds
+them to the main bus. The param is `fx_softcut` (to output / through rack) in
+the fx input group.
+
+- **The server needs four inputs.** `FxRack.initClass` raises
+  `numInputBusChannels` to 4. Crone boots the server from a `StartUp`
+  function, and those run after every `initClass`, so the option is set in
+  time. The extra inputs are unconnected until the param asks for them.
+- **Core puts the routes back.** `Script.clear` calls `audio.routing_default`
+  whenever a route was changed through `audio.port_connect`, and then runs the
+  `audio_post_restore_default_routing` hook, where the mod patches softcut in
+  again. With persist off the routes are returned to default at cleanup
+  instead.
+- **Older norns.** Everything on the Lua side is behind
+  `Core.softcut_available()`, which is false when `audio.port_connect` is
+  nil: no `fx_softcut` param, no softcut choice for the sidechain, no hook,
+  and `set_softcut` returns at once. The SC side is the same on every
+  version; its softcut synth just reads two silent inputs. If the
+  `SuperCollider:in_3` port is missing the routes are left alone.
+- Softcut's own engine input (`audio.level_eng_cut`) now contains softcut,
+  through the rack. The mod does not touch that level.
+
+## Sidechain, modulation and tempo
+
+Two buses exist for effects to read; nothing in the rack uses them itself.
+
+- **Key bus** (audio, stereo): `fxKey` copies one source to it, chosen by
+  `fx_key_source`: off, the rack's input (the main bus after the sources),
+  the audio inputs alone, the output of a send's chain (through `InFeedback`,
+  so one block late), or softcut. `fx_key_gain` scales it.
+- **Control bus**, six channels: the key signal's envelope, the tempo in bpm,
+  and four modulation values (`fx_mod_1..4`, plain 0..1 params, so they can be
+  MIDI-mapped, saved in racks and set by a script).
+
+A unit reads them with `FxRack.key`, `.env`, `.mod(n)`, `.tempo` and `.beat`
+inside its function. These are `In` UGens on bus numbers that arrive as the
+controls `fx_key` and `fx_ctl` of every native unit's synth, so a def does
+not depend on when the buses were allocated. v1 plugins do not get them.
+
+Tempo: `/fx/tempo` is sent at every `/fx/ensure` and by a clock coroutine
+that compares `clock.get_tempo()` twice a second, which covers every clock
+source. `clock.tempo_change_handler` is not used: it is one slot that belongs
+to the script. Core cancels all clocks when a script ends, after the cleanup
+hook, so the coroutine is started again at each script start and the tempo
+is not followed while no script is loaded.
+
+## Single-file plugins
+
+sclang compiles every `.sc` file under `dust`, mod or not, so an effect can be
+one file with no Lua. `FxUnit.register` takes `specs` (control name ->
+`ControlSpec` or anything `asSpec` accepts), `title` and `instances` in its
+options; the specs are also the SynthDef's metadata. A control without a
+given spec uses the global spec of its name if there is one, else it gets no
+param. The default is the function argument's.
+
+The Lua side cannot ask SC for this: `osc.event` belongs to the script. So
+sclang writes `dust/data/fx/units.lua` when it starts (and when a unit is
+registered later): a Lua table of every native unit, its title, instances
+and spec'd params. `Core.load_units_file` reads it at start-up, before every
+script and when the rack page opens, and registers the units no mod has
+registered (`unit.auto`). A Lua registration of the same name wins, so a
+plugin with a `mod.lua` is unchanged. The file is loaded with an empty
+environment.
+
+## Multiple instances
+
+A second instance is a unit of its own, named `<name>_2` (up to `_4`), with
+its own params (`fx_<name>_2_<id>`), slot, position, dry/wet and bypass, so
+PSETs, racks and MIDI maps need nothing new. `unit.base` names the original.
+
+- How many: `Core.settings.instances[name]` (the "copies" row of an opened
+  effect on the rack page) > the plugin's `instances` > 1. v1 plugins always
+  have one: their SC object holds a single synth.
+- Lua makes the copies in `Core.apply_instances`. SC makes its copy when a
+  name is first used: `FxUnit.find(\name_2)` clones `\name`, sharing the
+  SynthDef. A real unit of that name wins on both sides.
+- A new copy is in the model at once and can be placed from the rack page;
+  its params are added at the next script start, like everything else.
+- Copies share the base's presets: the directory and the ids in the file are
+  the base's, translated by position in `param_ids`.
+
+## Script API
+
+`fx.request(spec)` (`lib/fx.lua`), called from a script's `init`, is kept
+until the fx params exist and applied in `Core.restore`. The spec lists
+effects per chain, with values, or names a saved rack. Precedence is in
+"Presets" below: the PSET's fx values win, and so does a kept rack unless
+the spec says `replace` or the rack is empty. After `init` it is applied at
+once. It returns false when the mod is installed but not enabled.
 
 ## Testing
 
@@ -289,7 +382,10 @@ Files are `"id": value` lines, like a PSET.
   performs place / swap / move / bypass / remove, records the output and fails
   on any sample-to-sample step above a threshold. It also checks the audio
   input, that a feedback send keeps ringing after the source stops, that
-  a loop with gain 4 stays bounded, and the meter readings.
+  a loop with gain 4 stays bounded, the meter readings, softcut's input, a
+  ducker on the sidechain, the mod and tempo buses, two instances of one
+  unit, and the units file.
 - `test/run.lua`: runs the Lua core against the real norns `paramset` with
-  stubbed OSC, covering the rack model, v1 API, PSET write/read, persist and
-  the rack page's controls.
+  stubbed OSC, covering the rack model, v1 API, PSET write/read, persist,
+  the rack page's controls, softcut routing with and without
+  `audio.port_connect`, the units file, instances and script requests.

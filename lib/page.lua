@@ -35,7 +35,8 @@ local selected = 1
 local alt = false     -- K1 held
 local candidate = nil -- index into choices while scrolling with K1 + E3
 local choices = {}    -- false (none), then unit names
-local detail = nil    -- the opened row: { title, ids, selected }
+local detail = nil    -- the opened row: { title, ids, selected }; an entry of
+                      -- ids is a param id or a { name, value(), delta(d) } row
 local scene = nil     -- the rack last loaded or saved here
 local scene_pick = nil
 local note = nil      -- a message in the title line until the next input
@@ -59,7 +60,7 @@ local function slot_rows(chain_id)
 end
 
 table.insert(rows, { kind = "param", label = "input", id = "fx_input_level",
-  ids = { "fx_input_level", "fx_input_mode" } })
+  ids = { "fx_input_level", "fx_input_mode", "fx_softcut" } })
 slot_rows("insert")
 for _, s in ipairs(core.sends) do
   local prefix = "fx_send_" .. s
@@ -69,6 +70,13 @@ for _, s in ipairs(core.sends) do
   end
   table.insert(rows, { kind = "param", label = "send " .. s, id = prefix .. "_level", ids = ids })
   slot_rows(s)
+end
+table.insert(rows, { kind = "param", label = "sidechain", id = "fx_key_source",
+  ids = { "fx_key_source", "fx_key_gain" } })
+do
+  local ids = {}
+  for i = 1, core.mods do table.insert(ids, "fx_mod_" .. i) end
+  table.insert(rows, { kind = "param", label = "mod 1", id = ids[1], ids = ids })
 end
 table.insert(rows, { kind = "scene", label = "rack" })
 table.insert(rows, { kind = "save", label = "save rack..." })
@@ -128,9 +136,30 @@ local function change(id, d)
   end
 end
 
+local build_choices
+
+-- how many copies of an effect the rack offers, as the last row of an
+-- opened effect. A new copy can be placed at once; its params come with the
+-- next script start.
+local function copies_row(name)
+  return {
+    name = "copies",
+    value = function() return tostring(core.instances(name)) end,
+    delta = function(d)
+      local before = core.instances(name)
+      core.set_instances(name, before + step(d))
+      if core.instances(name) ~= before then
+        build_choices()
+        note = "params at next script"
+      end
+    end,
+  }
+end
+
 --- Open a row: the list of its params that exist and are shown.
 local function open_detail(row)
   local title, ids = row.label, row.ids
+  local extra
   if row.kind == "slot" then
     local name = occupant(row)
     if not name then return end
@@ -138,6 +167,7 @@ local function open_detail(row)
     title = row.label .. " " .. unit.label
     ids = { unit.bypass_id }
     for _, id in ipairs(unit.param_ids or {}) do table.insert(ids, id) end
+    if not unit.legacy and not unit.base then extra = copies_row(name) end
   end
   if not ids then return end
   local shown = {}
@@ -147,6 +177,7 @@ local function open_detail(row)
   if #shown == 0 then
     note = NEEDS_SCRIPT
   else
+    table.insert(shown, extra)
     detail = { title = title, ids = shown, selected = 1 }
   end
 end
@@ -239,7 +270,7 @@ end
 ----------------------------------------------------------------------------
 -- menu callbacks
 
-local function build_choices()
+function build_choices()
   choices = { false }
   local names = {}
   for _, name in ipairs(core.names) do table.insert(names, name) end
@@ -272,6 +303,7 @@ end
 
 function Page.init()
   open = true
+  core.load_units_file()
   alt, candidate, detail, scene_pick, note, modal = false, nil, nil, nil, nil, false
   build_choices()
   listen()
@@ -301,7 +333,7 @@ local function detail_key(n, z)
       detail = nil
     else
       local id = detail.ids[detail.selected]
-      if has(id) and is_switch(id) then params:set(id, 1 - params:get(id)) end
+      if type(id) == "string" and has(id) and is_switch(id) then params:set(id, 1 - params:get(id)) end
     end
   end
 end
@@ -376,7 +408,8 @@ function Page.enc(n, d)
     if n == 2 then
       detail.selected = util.clamp(detail.selected + step(d), 1, #detail.ids)
     elseif n == 3 then
-      change(detail.ids[detail.selected], d)
+      local id = detail.ids[detail.selected]
+      if type(id) == "table" then id.delta(d) else change(id, d) end
     end
   else
     list_enc(n, d)
@@ -473,8 +506,12 @@ local function draw_detail()
   for line = 1, math.min(VISIBLE, #detail.ids) do
     local i = top + line - 1
     local id = detail.ids[i]
-    local name = has(id) and params:lookup_param(id).name or id
-    draw_row(line, i == detail.selected, string.sub(name, 1, 13), string.sub(value_text(id), 1, 9))
+    if type(id) == "table" then
+      draw_row(line, i == detail.selected, id.name, id.value())
+    else
+      local name = has(id) and params:lookup_param(id).name or id
+      draw_row(line, i == detail.selected, string.sub(name, 1, 13), string.sub(value_text(id), 1, 9))
+    end
   end
 end
 

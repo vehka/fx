@@ -196,6 +196,14 @@ FxRack {
 	classvar <mainBus, <insert, <sends;
 	classvar <>inBuses;   // two mono bus indices carrying the audio inputs
 	classvar <inputSynth, <inputLevel = 0, <inputMono = 0;
+	// softcut, when it is patched to the server's third and fourth input
+	classvar <>cutBuses, <softcutSynth, <softcutLevel = 0;
+	// shared buses any unit may read: the sidechain (key) signal, and one
+	// control bus of [key envelope, tempo, mod 1..4]
+	classvar <keyBus, <ctlBus, <keySynth, <keySettings, <bpm = 120, <mods;
+	classvar <>numMods = 4;
+	// where the list of units is written for the Lua side; nil outside norns
+	classvar <>unitsFile, started = false;
 	classvar <>fade = 0.05;
 	classvar <meterIn, <meterOut, meterBus;
 	classvar <>matron;   // where meter and CPU readings go: matron's OSC port
@@ -206,7 +214,18 @@ FxRack {
 		sendNames = [\a, \b];
 		queue = List.new;
 		sends = IdentityDictionary.new;
+		keySettings = (src: 0, gain: 1, attack: 0.005, release: 0.15);
+		mods = 0 ! numMods;
+		// Two more server inputs, for softcut: crone boots the server from a
+		// StartUp function, which runs after every initClass.
+		Class.initClassTree(Server);
+		Server.local.options.numInputBusChannels = max(Server.local.options.numInputBusChannels, 4);
 		StartUp.add {
+			if(\Crone.asClass.notNil) {
+				unitsFile = unitsFile ?? { Platform.userHomeDir +/+ "dust/data/fx/units.lua" };
+			};
+			started = true;
+			this.unitsChanged;
 			this.addOSC;
 			ServerQuit.add({ this.reset }, \all);
 			CmdPeriod.add({ this.reset });
@@ -217,6 +236,24 @@ FxRack {
 	*tapArea { |which| ^if(which == \pre) { preTaps } { postTaps } }
 
 	*units { ^FxUnit.all }
+
+	// called when a unit is registered: keep the list for the Lua side current
+	*unitsChanged {
+		if(started and: { unitsFile.notNil }) { FxUnit.writeUnits(unitsFile) };
+	}
+
+	// For use inside a unit's function. The bus numbers arrive as controls of
+	// the unit's synth, so nothing here depends on when the def was built.
+
+	// the sidechain signal, stereo
+	*key { ^In.ar(\fx_key.kr(0), 2) }
+	// its envelope, 0..1 for a full-scale signal
+	*env { ^In.kr(\fx_ctl.kr(0)) }
+	// beats per minute and seconds per beat of the norns clock
+	*tempo { ^In.kr(\fx_ctl.kr(0) + 1).max(1) }
+	*beat { ^60 / this.tempo }
+	// modulation bus n (1..numMods), 0..1, set by the fx_mod_<n> params
+	*mod { |n = 1| ^Lag.kr(In.kr(\fx_ctl.kr(0) + 1 + n.clip(1, numMods)), 0.05) }
 
 	*chain { |name|
 		^if(name == \insert) { insert } { sends[name] !? { |s| s.chain } };
@@ -231,6 +268,8 @@ FxRack {
 		insert = nil;
 		group = nil;
 		inputSynth = nil;
+		softcutSynth = nil;
+		keySynth = nil;
 		meterIn = nil;
 		meterOut = nil;
 	}
@@ -258,6 +297,9 @@ FxRack {
 				while { crone.context.isNil } { 0.2.wait };
 			};
 			context = crone !? { crone.context };
+			keyBus = keyBus ?? { Bus.audio(server, 2) };
+			ctlBus = ctlBus ?? { Bus.control(server, 2 + numMods) };
+			ctlBus.setn([0, bpm] ++ mods);
 			this.sendDefs;
 			server.sync;
 			mainBus = Bus.new(\audio, 0, 2, server);
@@ -278,6 +320,19 @@ FxRack {
 				\in_l, inBuses[0], \in_r, inBuses[1], \out, mainBus,
 				\level, inputLevel, \mono, inputMono
 			], group, \addToHead);
+			// softcut joins the same way when its outputs are patched to the
+			// server's inputs 3 and 4, which the Lua side does on norns 3.x
+			cutBuses = cutBuses ?? {
+				if(server.options.numInputBusChannels >= 4) {
+					server.options.numOutputBusChannels + [2, 3];
+				};
+			};
+			if(cutBuses.notNil) {
+				softcutSynth = Synth.new(\fxInput, [
+					\in_l, cutBuses[0], \in_r, cutBuses[1], \out, mainBus,
+					\level, softcutLevel, \mono, 0
+				], inputSynth, \addAfter);
+			};
 			preTaps = Group.new(group, \addToTail);
 			preSends = Group.new(group, \addToTail);
 			insertGroup = Group.new(group, \addToTail);
@@ -289,6 +344,14 @@ FxRack {
 				sends[n].alloc(server);
 			};
 			sendNames.do { |n| sends[n].build(server) };
+			// the sidechain: after the sources, ahead of everything that may read it
+			keySynth = Synth.new(\fxKey, [
+				\main, mainBus, \in_l, inBuses[0], \in_r, inBuses[1],
+				\a, sends[\a].bus, \b, sends[\b].bus,
+				\cut_l, (cutBuses ? inBuses)[0], \cut_r, (cutBuses ? inBuses)[1],
+				\has_cut, cutBuses.notNil.binaryValue,
+				\out, keyBus, \env, ctlBus
+			] ++ keySettings.asPairs, preTaps, \addBefore);
 			// v1 engines look these up when they allocate
 			topEnvironment.put(\sendA, sends[\a].bus);
 			topEnvironment.put(\sendB, sends[\b].bus);
@@ -325,6 +388,24 @@ FxRack {
 			var sig = LeakDC.ar(FxUnit.guard(InFeedback.ar(in, 2)), 0.9997);
 			var env = Amplitude.ar(max(sig[0].abs, sig[1].abs), 0.001, 0.2);
 			Out.ar(out, (sig / env.max(1)).clip2(1));
+		}).send(server);
+
+		// Sidechain. src: 0 off, 1 the rack's input (engine and whatever
+		// else joined the main bus), 2 the audio inputs alone, 3 and 4 the
+		// output of a send's chain (one block late), 5 softcut.
+		SynthDef(\fxKey, { |main, in_l, in_r, a, b, cut_l, cut_r, has_cut = 0, out, env,
+			src = 0, gain = 1, attack = 0.005, release = 0.15|
+			var sig = Select.ar(src.clip(0, 5), [
+				DC.ar(0) ! 2,
+				In.ar(main, 2),
+				[In.ar(in_l), In.ar(in_r)],
+				InFeedback.ar(a, 2),
+				InFeedback.ar(b, 2),
+				[In.ar(cut_l), In.ar(cut_r)] * has_cut
+			]);
+			sig = FxUnit.guard(sig) * Lag.kr(gain, 0.05);
+			Out.ar(out, sig);
+			Out.kr(env, A2K.kr(Amplitude.ar(max(sig[0].abs, sig[1].abs), attack, release)).min(4));
 		}).send(server);
 
 		// meters, running only while the rack page is open. The level at the
@@ -366,7 +447,7 @@ FxRack {
 	// unitName nil or \none empties the slot
 	*place { |chainName, index, unitName|
 		var chain = this.chain(chainName);
-		var unit = if(unitName.isNil or: { unitName == \none }) { nil } { FxUnit.all[unitName] };
+		var unit = if(unitName.isNil or: { unitName == \none }) { nil } { FxUnit.find(unitName) };
 		if(chain.isNil) { ("fx: no chain " ++ chainName).warn; ^this };
 		if(unit.isNil and: { unitName.notNil } and: { unitName != \none }) {
 			("fx: unknown unit " ++ unitName).warn;
@@ -382,6 +463,31 @@ FxRack {
 		);
 	}
 
+	// softcut into the rack; the JACK routes are made by the Lua side
+	*setSoftcut { |value|
+		softcutLevel = value;
+		softcutSynth !? { softcutSynth.set(\level, value) };
+	}
+
+	// key: \src, \gain, \attack or \release
+	*setKey { |key, value|
+		keySettings[key] = value;
+		keySynth !? { keySynth.set(key, value) };
+	}
+
+	*setTempo { |value|
+		bpm = value.clip(1, 1000);
+		ctlBus !? { ctlBus.setAt(1, bpm) };
+	}
+
+	*setMod { |n, value|
+		n = n.asInteger;
+		if((n >= 1) and: { n <= numMods }) {
+			mods[n - 1] = value;
+			ctlBus !? { ctlBus.setAt(1 + n, value) };
+		};
+	}
+
 	// peak follower over both channels, at control rate
 	*level { |sig|
 		^A2K.kr(Amplitude.ar(max(sig[0].abs, sig[1].abs), 0.005, 0.3));
@@ -394,8 +500,9 @@ FxRack {
 			if(meterOut.isNil) {
 				meterBus = meterBus ?? { Bus.control(server, 1) };
 				server.makeBundle(nil, {
+					// after every source: the audio inputs and softcut
 					meterIn = Synth.new(\fxMeterIn, [\in, mainBus, \out, meterBus],
-						inputSynth, \addAfter);
+						keySynth, \addBefore);
 					meterOut = Synth.new(\fxMeterOut, [
 						\main, mainBus, \a, sends[\a].bus, \b, sends[\b].bus, \in, meterBus
 					], group, \addToTail);
@@ -425,7 +532,7 @@ FxRack {
 			this.do { this.place(chainName, index, unitName) };
 		}, '/fx/slot');
 		OSCFunc({ |msg|
-			var unit = FxUnit.all[msg[1].asSymbol];
+			var unit = FxUnit.find(msg[1].asSymbol);
 			if(unit.notNil) {
 				unit.set(msg[2].asSymbol, msg[3].asFloat);
 			} {
@@ -451,6 +558,10 @@ FxRack {
 			};
 		}, '/fx/xsend');
 		OSCFunc({ |msg| this.setInput(msg[1].asSymbol, msg[2].asFloat) }, '/fx/input');
+		OSCFunc({ |msg| this.setSoftcut(msg[1].asFloat) }, '/fx/softcut');
+		OSCFunc({ |msg| this.setKey(msg[1].asSymbol, msg[2].asFloat) }, '/fx/key');
+		OSCFunc({ |msg| this.setTempo(msg[1].asFloat) }, '/fx/tempo');
+		OSCFunc({ |msg| this.setMod(msg[1], msg[2].asFloat) }, '/fx/mod');
 		OSCFunc({ this.do { this.clear } }, '/fx/clear');
 		OSCFunc({ |msg| fade = msg[1].asFloat.max(0.005) }, '/fx/fade');
 		OSCFunc({ |msg|

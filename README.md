@@ -4,9 +4,95 @@ A send and insert effects rack for norns, usable with any script. SuperCollider
 effects are placed in a serial insert chain on the engine output or in one of
 two send chains.
 
-This is v2 and needs norns 3.x. It replaces v1 in `dust/code/fx`; do not keep
-both installed. v1 plugins and v1-aware engines keep working.
+This is v2, written for norns 3.x. It replaces v1 in `dust/code/fx`; do not
+keep both installed. v1 plugins and v1-aware engines keep working. Routing
+softcut through the rack uses the audio routing functions of 3.x and is left
+out where norns does not have them.
 Design notes: [docs/DESIGN.md](docs/DESIGN.md).
+
+## Signal flow
+
+Everything the rack can route. `[brackets]` are params; the main bus is
+SuperCollider's output, which is where any script's engine plays.
+
+```
+ SOURCES                                MAIN BUS
+                                           ║
+ engine of any script ────────────────────►║
+ audio in ──── [input level, mode] ───────►║
+ softcut ───── [softcut: through rack] ───►║
+                                           ║
+                                           ╟──── [send level]   tap: pre insert ─────►  SEND A / B
+                                           ║◄─── [return level] return to: pre insert ─ SEND A / B
+                                      ┌────╨────┐
+                                      │  ins 1  │
+                                      │  ins 2  │  in series, each with
+                                      │  ins 3  │  [dry/wet] and [bypass]
+                                      │  ins 4  │
+                                      └────╥────┘
+                                           ╟──── [send level]   tap: post insert ────►  SEND A / B
+                                           ║◄─── [return level] return to: post insert  SEND A / B
+                                           ▼
+                        norns mixer: reverb, compressor, tape, output
+
+
+ SEND A  (send b is the same, with a and b exchanged)
+
+ tap from the main bus ────────────┐
+ send b ── [b to send a] ──────────┼─► limiter ─► a 1 ─► a 2 ─┬─► [return level] ─► main bus
+ voices of an fx-aware engine ─────┘              100 % wet   └─► [a to send b] ──► send b
+
+
+ SIDECHAIN AND CONTROL  (for the effects that read them)
+
+ [sidechain: off | rack input | audio in | send a | send b | softcut] ─► [sc gain] ─► key signal + its envelope
+ [mod 1] .. [mod 4]   four values any effect may follow; map them to MIDI or set them from a script
+ tempo                the norns clock, for synced effects
+```
+
+What follows from it:
+
+- **Inserts** process everything on the main bus: the engine, and the audio
+  input and softcut once they are brought in. Without the rack those two are
+  mixed in after SuperCollider and cannot be processed.
+- **A send is tapped and returned on either side of the inserts**, each side
+  chosen separately. Pre tap with post return is the usual parallel effect;
+  pre tap with pre return sends the effect through the inserts too.
+- **Post tap with pre return is a feedback loop**: out of the inserts, through
+  the send, back into the inserts. So are `a to send b` and `b to send a`
+  together. `a to send b` alone is a delay feeding a reverb.
+- **The sidechain is heard only by effects that use it.** With `audio in` as
+  the source and the input level at 0, a kick on the input can duck the
+  engine without being in the rack itself.
+- An effect can be loaded more than once (see copies, below).
+
+In SuperCollider the rack is one group placed directly after norns' output
+group, so it runs after every engine:
+
+```
+1 group
+   group  Crone.context.ig     adc passthrough to Crone.context.in_b
+   group  Crone.context.xg     the script's engine, writing to the main bus [0, 1]
+   group  Crone.context.og
+   group  FxRack.group
+      fxInput                  audio inputs (in_b) -> main bus
+      fxInput                  softcut (server inputs 3, 4) -> main bus
+      fxKey                    the chosen sidechain source -> key bus and envelope
+      group  preTaps           the tap of each send with tap = pre insert
+      group  preSends          the sends that return pre insert
+      group  insert            ins 1..4, each replacing the main bus in place
+      group  postTaps          the tap of each send with tap = post insert
+      group  postSends         the sends that return post insert
+         group  send a
+            fxInlet            taps and send b -> the send's own bus, behind a limiter
+            group  chain       a 1, a 2, in place on that bus
+            fxReturn           -> main bus
+            fxReturn           -> send b
+```
+
+A loop works because a send reads its input one block late when the writer
+runs after it. An empty send is muted, and removed effects ring out before
+their node is freed.
 
 ## Using it
 
@@ -19,7 +105,10 @@ script then has these at the end of its params menu:
 - **fx input**: the level of the audio inputs into the rack, stereo or summed
   to mono. The input then passes through the inserts and send taps like the
   engine does. Turn the norns monitor level down to hear only the processed
-  signal.
+  signal. **softcut** (norns 3.x) can be set to "through rack": its output
+  then goes into the rack instead of straight to the norns mixer. If the
+  script also records the engine into softcut (`audio.level_eng_cut`), softcut
+  now hears itself through that path: a loop, wanted or not.
 - **fx sends**: per send, the level tapped from the engine output, where it is
   tapped (pre/post insert), the return level, where it returns, and the level
   from its effects into the other send (delay into reverb).
@@ -28,6 +117,9 @@ script then has these at the end of its params menu:
   return, and both "a to send b" and "b to send a" above zero. Each send input
   has a limiter, so a loop stays below full scale, but it can sustain or howl:
   bring the levels up slowly.
+- **fx sidechain + mod**: where the sidechain signal comes from and its gain,
+  and the four mod values. They do nothing by themselves: effects that have a
+  sidechain or follow a mod value read them.
 - **fx presets**: save and load presets per effect, and scenes of the whole
   rack. "save as default" makes a preset the effect's starting values; "save
   as default rack" makes a scene the rack for scripts that have no fx settings
@@ -60,6 +152,15 @@ at the top the average / peak CPU of SuperCollider.
 In an opened row E2 selects a param, E3 changes it, K3 toggles a switch and
 K2 goes back to the rack. Hold K1 for a moment before pressing K3: a quick
 tap of K1 leaves the menu, as everywhere on norns.
+
+The last row of an opened effect is **copies**: how many of that effect the
+rack offers, up to four. A second copy appears among the effects as
+"<effect> 2" and can be loaded at once; its own params (and so its place in
+PSETs) come with the next script start. Copies share the effect's presets.
+Older (v1) plugins have one copy.
+
+Below the sends are rows for the **sidechain** source and **mod 1**; open
+them for the gain and the other mod values.
 
 Below the rack:
 
@@ -98,7 +199,40 @@ The function receives the stereo input and returns the wet signal. Its other
 arguments become lagged controls. `tail` is how long the output keeps ringing
 after the effect is removed.
 
-Lua, in `lib/mod.lua`:
+That file can be the whole plugin. Give the controls specs and the rack makes
+the params itself; the file only has to be somewhere under `dust/code`:
+
+```supercollider
+FxUnit.register(\mydelay, { |in, time = 0.3, fb = 0.4| ... }, (
+    tail: 4,
+    title: "My Delay",
+    specs: (time: [0.01, 2, \exp, 0, 0.3, "s"], fb: [0, 0.95]),
+));
+```
+
+A control without a spec gets one if SuperCollider has a spec of that name
+(`\freq`, `\rq`, ...) and is otherwise left at its default. The default
+value is the one in the function. `instances: 2` offers two copies from the
+start.
+
+Inside the function these read the shared signals:
+
+| | |
+|---|---|
+| `FxRack.key` | the sidechain signal, stereo |
+| `FxRack.env` | its envelope, 0 to 1 for a full-scale signal |
+| `FxRack.mod(n)` | mod value n (1 to 4), 0 to 1 |
+| `FxRack.tempo`, `FxRack.beat` | the norns clock in bpm, and seconds per beat |
+
+```supercollider
+// a ducker, and a delay of a dotted eighth
+FxUnit.register(\duck, { |in, depth = 1| in * (1 - (FxRack.env * depth).clip(0, 1)) },
+    (specs: (depth: [0, 1])));
+FxUnit.register(\sync, { |in| DelayC.ar(in, 4, (FxRack.beat * 0.75).min(4)) }, (tail: 4));
+```
+
+For option and switch params, formatters or factory presets, describe the
+params in Lua instead, in `lib/mod.lua`:
 
 ```lua
 local fx = require 'fx/lib/fx'
@@ -116,10 +250,37 @@ fx.register{
 ```
 
 Param types: `control` (default), `taper`, `number`, `option`, `binary`.
+`instances = 2` offers two copies. A Lua description replaces the specs.
 
 Factory presets go in `presets/<name>/<preset>.fxp` in the plugin's directory.
 Save them on the device from **fx presets** and copy them from
 `dust/data/fx/presets/<name>/`.
+
+## Scripts
+
+A script can ask for a rack in its `init`, without depending on the mod:
+
+```lua
+local ok, fx = pcall(require, 'fx/lib/fx')
+if ok then
+  fx.request{
+    insert = { "mydelay", { "drive", mix = 0.4, gain = 2 } },
+    a = { "reverb" },
+    params = { fx_send_a_level = 0.3 },
+  }
+end
+```
+
+`insert`, `a` and `b` list effects in slot order: a name, or a table of the
+name with its dry/wet (`mix`), `bypass` and own params. An effect named twice
+uses a second copy if there is one. `params` sets any fx param by id, and a
+string instead of the table names a saved rack. Effects that are not
+installed are skipped.
+
+It is a request. The fx values in the PSET the script loads come first, and
+with **keep rack** on so does a rack that is already running; add
+`replace = true` to take the rack over anyway. Called later than `init`, it
+is applied at once under the same rule.
 
 ## Engines
 

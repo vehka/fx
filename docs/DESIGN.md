@@ -109,16 +109,25 @@ The rack model in Lua is the source of truth; SC executes `/fx/slot`,
   (`fx.register{name=..., params={...}}`). One instance per unit for now.
 - **Params are plugin-centric with stable IDs**, so PSETs and PMAPs keep
   working. v1 IDs are unchanged.
-- **Per-unit `slot` option** (`none / send a / send b / insert`, the v1 param)
-  puts the unit in the first free slot of that chain.
-- **Per-unit position** (`fx_pos_<unit>`, hidden, saved) gives the index in the
-  chain. Slot + position restore a rack independently of which other plugins
-  are installed.
-- **Rack slot params** (`fx_ins_1..4`, `fx_a_1..2`, `fx_b_1..2`) are an
-  unsaved view for editing order; their option lists depend on what is
-  installed, so they are not written to PSETs.
-- Placing a unit on an occupied slot moves the occupant to the first free slot
-  of the chain, or out of the rack if the chain is full.
+- **Choosing where an effect goes is scroll-then-confirm.** The stock params
+  menu applies an option on every encoder step, which would load every effect
+  scrolled past. Rack rows and each unit's slot row are therefore `Chooser`
+  params (`lib/chooser.lua`): they present as triggers, so E3 only moves the
+  candidate (`delta`) and K3 applies it (`set`). A trigger row shows no value,
+  so the choice is part of the row name, with ` ?` while unapplied. This uses
+  only the param-object contract; core is not patched.
+- **Rack rows** (`fx_ins_1..4`, `fx_a_1..2`, `fx_b_1..2`): applying a row
+  unloads its occupant and moves the chosen unit there if it was elsewhere.
+  Not saved; the option list depends on what is installed.
+- **Per-unit slot row** (`<slot id>_pick`: none / send a / send b / insert):
+  applying puts the unit in the first free slot of that chain.
+- **Saved state per unit**, hidden in the fx rack group: the slot option under
+  its v1 id, and the position `fx_pos_<unit>`. Slot + position restore a rack
+  independently of which other plugins are installed. Setting these (PSET
+  load) moves an occupant to the first free slot of the chain, or out of the
+  rack if the chain is full, so the result does not depend on line order.
+- Unit groups come first in the menu, then fx rack, fx sends and fx presets:
+  the rack group needs every unit's slot id.
 - **Sends**: `level` (master tap, so any script can use the send), `tap`
   (pre/post), `return` level, `dest` (pre/post insert).
 

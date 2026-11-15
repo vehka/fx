@@ -14,14 +14,16 @@ Enable the mod and its effect plugins under SYSTEM > MODS and restart. Every
 script then has these at the end of its params menu:
 
 - **fx rack**: what is in each insert and send slot. Inserts run in slot order.
+  Turn E3 to scroll through the effects and press K3 to load the one shown; a
+  `?` marks a choice that is not loaded yet.
 - **fx sends**: per send, the level tapped from the engine output, where it is
   tapped (pre/post insert), the return level and where it returns.
 - **fx presets**: save and load presets per effect, and scenes of the whole
   rack. "save as default" makes a preset the effect's starting values; "save
   as default rack" makes a scene the rack for scripts that have no fx settings
   of their own. Files live in `dust/data/fx/`.
-- one group per effect, with `slot` (none / send a / send b / insert), dry/wet
-  and the effect's own params.
+- one group per effect, with `slot` (none / send a / send b / insert; E3 then
+  K3, as in the rack), dry/wet and the effect's own params.
 
 Effects fade in and out, and tails ring out when an effect is removed or
 bypassed. The mod's settings page (SYSTEM > MODS > fx) sets the fade time and

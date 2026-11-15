@@ -97,6 +97,17 @@ end
 
 local function trigger(id) params:lookup_param(id):bang() end
 
+-- what the params menu does: E3 steps call delta, K3 calls params:set
+local function row(id) return params:lookup_param(id) end
+local function turn(id, steps)
+  for _ = 1, math.abs(steps) do row(id):delta(steps > 0 and 1 or -1) end
+end
+local function press(id) params:set(id) end
+local function pick(id, text)
+  assert(row(id):choose(text), "no option " .. text)
+  press(id)
+end
+
 local function stop_script()
   sent = {}
   run_hook("script_post_cleanup")
@@ -183,51 +194,60 @@ check("rack view follows", params:string("fx_ins_1") == "distortion")
 check("position is recorded", params:get("fx_pos_fx_distortion") == 1)
 check("dry/wet shown for an insert", params:visible("fx_distortion_slot_drywet"))
 
--- rack rows: a row only changes itself
--- view options are none, then the units sorted by name
-local view = {}
-for i, name in ipairs(core.view_names) do view[name] = i end
+-- rack rows: E3 scrolls, K3 applies
 sent = {}
-params:set("fx_ins_2", view.fx_distortion)
-check("a unit loaded on another row is shown in parentheses and not moved",
-  params:string("fx_ins_2") == "(distortion)" and core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == nil
-  and #messages("/fx/slot") == 0)
-params:set("fx_ins_2", view.echo)
-check("scrolling on puts the next unit on that row only",
-  core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == "echo" and params:string("fx_ins_2") == "echo")
+turn("fx_ins_2", 3)
+check("scrolling a row loads nothing", #messages("/fx/slot") == 0 and core.rack.insert[2] == nil)
+check("an unapplied choice is marked", row("fx_ins_2").name == "insert 2: res ?")
+check("applied rows are not marked", row("fx_ins_1").name == "insert 1: distortion")
+press("fx_ins_2")
+check("K3 loads the choice on that row only",
+  core.rack.insert[2] == "fx_res" and core.rack.insert[1] == "fx_distortion" and #messages("/fx/slot") == 1
+  and row("fx_ins_2").name == "insert 2: res")
 sent = {}
-params:set("fx_ins_2", view.fx_res)
-check("the previous occupant leaves the rack, it does not move to another row",
-  core.locate("echo") == nil and core.rack.insert[2] == "fx_res" and core.rack.insert[3] == nil
-  and params:get("fx_echo_slot") == 1)
-params:set("fx_ins_2", 1)
-check("none empties the row", core.rack.insert[2] == nil and core.locate("fx_res") == nil)
-check("and the rest of the rack is untouched", core.rack.insert[1] == "fx_distortion" and core.rack.insert[3] == nil)
-params:set("fx_ins_3", view.fx_distortion)
-sent = {}
-params:set("fx_ins_1", 1)
-check("a waiting row loads the unit when its other row lets go",
-  core.rack.insert[1] == nil and core.rack.insert[3] == "fx_distortion" and params:string("fx_ins_3") == "distortion"
-  and has("/fx/slot", "insert 3 fx_distortion"))
-params:set("fx_ins_3", 1)
+pick("fx_ins_2", "echo")
+check("applying another unit unloads the previous one, it does not move to another row",
+  core.rack.insert[2] == "echo" and core.locate("fx_res") == nil and core.rack.insert[3] == nil
+  and params:get("fx_res_slot") == 1)
+pick("fx_ins_3", "distortion")
+check("applying a unit that is loaded elsewhere moves it",
+  core.rack.insert[3] == "fx_distortion" and core.rack.insert[1] == nil and row("fx_ins_1").name == "insert 1: none")
+turn("fx_ins_1", 2)
+pick("fx_ins_2", "none")
+check("none empties the row", core.rack.insert[2] == nil and core.locate("echo") == nil)
+check("a rack change drops unapplied choices on other rows", row("fx_ins_1").name == "insert 1: none")
+pick("fx_ins_3", "none")
 check("every insert can go back to none", core.rack.insert[1] == nil and core.rack.insert[2] == nil
   and core.rack.insert[3] == nil and core.rack.insert[4] == nil)
 check("unit slot params follow the rows", params:get("fx_distortion_slot") == 1 and params:get("fx_res_slot") == 1)
 
+-- the slot row in each effect's own group works the same way
+sent = {}
+turn("fx_echo_slot_pick", 3)
+check("scrolling an effect's slot loads nothing",
+  #messages("/fx/slot") == 0 and row("fx_echo_slot_pick").name == "slot: insert ?" and params:get("fx_echo_slot") == 1)
+turn("fx_echo_slot_pick", -1)
+press("fx_echo_slot_pick")
+check("K3 applies the slot", core.rack.b[1] == "echo" and row("fx_echo_slot_pick").name == "slot: send b"
+  and params:get("fx_echo_slot") == 3 and row("fx_b_1").name == "send b 1: echo")
+pick("fx_echo_slot_pick", "none")
+check("slot none unloads", core.locate("echo") == nil)
+check("choosers are not saved and not mappable", row("fx_ins_1").t == params.tTRIGGER and row("fx_ins_1").allow_pmap == false)
+
 -- unit slot params: these do move things, PSET restore depends on it
 params:set("fx_echo_slot", 4)
 params:set("fx_distortion_slot", 4)
-check("slot = insert uses remembered positions", core.rack.insert[2] == "echo" and core.rack.insert[3] == "fx_distortion")
+check("slot = insert takes the first free slot", core.rack.insert[1] == "echo" and core.rack.insert[2] == "fx_distortion")
+params:set("fx_pos_echo", 2)
+check("a position swaps with the occupant", core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == "echo")
 params:set("fx_pos_echo", 1)
-params:set("fx_pos_fx_distortion", 2)
-check("positions reorder", core.rack.insert[1] == "echo" and core.rack.insert[2] == "fx_distortion")
-check("unit slot param follows the view", params:get("fx_echo_slot") == 4)
+check("unit slot param follows", params:get("fx_echo_slot") == 4)
 
 sent = {}
 params:set("fx_echo_slot", 2)
-check("slot = send a places in send a", has("/fx/slot", "a 1 echo"))
+check("slot = send a places in send a 1", has("/fx/slot", "a 1 echo"))
 params:set("fx_echo_slot", 4)
-check("back to insert returns to the remembered position",
+check("back to insert takes the first free slot",
   core.rack.insert[1] == "echo" and core.rack.insert[2] == "fx_distortion")
 
 params:set("fx_distortion_drive", 0.8)

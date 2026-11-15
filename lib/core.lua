@@ -2,6 +2,8 @@
 -- The rack model here is the source of truth; SuperCollider executes it.
 -- See docs/DESIGN.md.
 
+local Chooser = require 'fx/lib/chooser'
+
 local Core = {}
 
 Core.SC = { "localhost", 57120 }
@@ -21,7 +23,6 @@ Core.chain_slot = { a = 2, b = 3, insert = 4 }
 Core.units = {}      -- name -> unit
 Core.names = {}      -- registration order, sorted when params are built
 Core.rack = {}       -- chain id -> index -> unit name
-Core.pending = {}    -- chain id -> index -> unit asked for on a rack row but loaded elsewhere
 Core.live = {}       -- param id -> last value, survives script changes
 Core.ids = {}        -- fx param ids of the running script, in menu order
 Core.is_fx_id = {}
@@ -33,7 +34,6 @@ local chain_by_id = {}
 for _, c in ipairs(Core.chains) do
   chain_by_id[c.id] = c
   Core.rack[c.id] = {}
-  Core.pending[c.id] = {}
 end
 
 local function send(path, args)
@@ -124,23 +124,6 @@ local function commit(before)
   Core.sync_params()
 end
 
--- a rack row waiting for a unit loads it once the unit is free
-local function activate_pending()
-  for _, c in ipairs(Core.chains) do
-    for i = 1, c.size do
-      local name = Core.pending[c.id][i]
-      if name then
-        if Core.rack[c.id][i] ~= nil then
-          Core.pending[c.id][i] = nil
-        elseif Core.locate(name) == nil then
-          Core.rack[c.id][i] = name
-          Core.pending[c.id][i] = nil
-        end
-      end
-    end
-  end
-end
-
 --- Put a unit at chain/index, or take it out of the rack with chain = nil.
 -- An occupant moves to the first free slot of the chain, or out if it is
 -- full; with `replace` it always leaves the rack.
@@ -152,41 +135,28 @@ function Core.place(name, chain_id, index, replace)
   if chain_id then
     local occupant = Core.rack[chain_id][index]
     Core.rack[chain_id][index] = name
-    Core.pending[chain_id][index] = nil
     if occupant and not replace then
       local free = first_free(chain_id)
-      if free then
-        Core.rack[chain_id][free] = occupant
-        Core.pending[chain_id][free] = nil
-      end
+      if free then Core.rack[chain_id][free] = occupant end
     end
   end
-  activate_pending()
   commit(before)
 end
 
---- A rack row was set by hand. The row only changes itself: its occupant
--- leaves the rack, and a unit that is loaded elsewhere is not taken from
--- there; the row waits for it instead and shows it in parentheses.
+--- A rack row was applied by hand. The row's occupant leaves the rack; a
+-- unit that is loaded elsewhere moves here.
 function Core.set_row(chain_id, index, name)
-  local occupant = Core.rack[chain_id][index]
   if name == nil then
-    Core.pending[chain_id][index] = nil
-    if occupant then Core.place(occupant, nil) else Core.sync_params() end
-    return
-  end
-  local at_chain, at_index = Core.locate(name)
-  if at_chain == chain_id and at_index == index then return end
-  if at_chain then
-    Core.pending[chain_id][index] = name
+    local occupant = Core.rack[chain_id][index]
     if occupant then Core.place(occupant, nil) else Core.sync_params() end
   else
     Core.place(name, chain_id, index, true)
+    Core.sync_params()
   end
 end
 
---- Put a unit somewhere in a chain: its remembered position, else the first
--- free slot, else the last slot.
+--- Put a unit somewhere in a chain: the position a PSET just gave it, else
+-- the first free slot, else the last slot.
 function Core.place_in_chain(name, chain_id)
   local old_chain = Core.locate(name)
   if old_chain == chain_id then return end
@@ -207,10 +177,7 @@ function Core.place_in_chain(name, chain_id)
 end
 
 function Core.clear_rack()
-  for _, c in ipairs(Core.chains) do
-    Core.rack[c.id] = {}
-    Core.pending[c.id] = {}
-  end
+  for _, c in ipairs(Core.chains) do Core.rack[c.id] = {} end
   send("/fx/clear")
 end
 
@@ -257,27 +224,36 @@ function Core.bind(id, action, unit)
   end)
 end
 
---- Make the rack view, the per-unit slot/position params and mix visibility
--- reflect the model, without firing actions.
+local function chooser(id)
+  local index = params.lookup[id]
+  return index and params.params[index] or nil
+end
+
+--- Make the rack rows, the per-unit slot/position params and mix visibility
+-- reflect the model, without firing actions. Unapplied choices are dropped.
 function Core.sync_params()
   if not Core.active then return end
   local rebuild = false
   for _, c in ipairs(Core.chains) do
     for i = 1, c.size do
-      local name = Core.rack[c.id][i] or Core.pending[c.id][i]
-      quiet_set(c.prefix .. i, name and option_index(Core.view_names, name) or 1)
+      local name = Core.rack[c.id][i]
+      local row = chooser(c.prefix .. i)
+      if row then row:show(name and option_index(Core.view_names, name) or 1) end
     end
   end
   for _, name in ipairs(Core.names) do
     local unit = Core.units[name]
     local chain_id, index = Core.locate(name)
+    local slot = chain_id and Core.chain_slot[chain_id] or 1
     if unit.slot_id then
-      quiet_set(unit.slot_id, chain_id and Core.chain_slot[chain_id] or 1)
+      quiet_set(unit.slot_id, slot)
+      local row = chooser(unit.slot_id .. "_pick")
+      if row then row:show(slot) end
     end
-    if chain_id then
-      unit.pos = index
-      quiet_set("fx_pos_" .. name, index)
-    end
+    -- a unit outside the rack has no position: it takes the first free slot
+    -- when it comes back, unless a PSET says otherwise
+    unit.pos = index or 0
+    quiet_set("fx_pos_" .. name, unit.pos)
     if unit.mix_id and params.lookup[unit.mix_id] then
       local want_visible = chain_id == "insert"
       if params:visible(unit.mix_id) ~= want_visible then
@@ -294,16 +270,18 @@ local function display_mix(param)
   return (100 - percent) .. "/" .. percent
 end
 
---- The slot option and the dry/wet control every unit has. Exactly two
--- params, as in v1, so plugin group sizes stay correct.
+--- The slot row and the dry/wet control every unit has. Exactly two params,
+-- as in v1, so plugin group sizes stay correct. The row is a Chooser (E3
+-- scrolls, K3 applies); the saved value keeps the v1 id and lives hidden in
+-- the fx rack group, see add_rack_params.
 function Core.add_slot_params(unit, slot_id, slot_name, mix_id)
   unit.params_added = true
   unit.slot_id = slot_id
   unit.mix_id = mix_id
-  params:add_option(slot_id, slot_name, Core.slot_options, 1)
-  Core.bind(slot_id, function(value)
-    Core.place_in_chain(unit.name, Core.slot_chain[value] or nil)
-  end)
+  params:add{ param = Chooser.new(slot_id .. "_pick", slot_name, Core.slot_options, function(value)
+    params:set(slot_id, value)
+    Core.sync_params()
+  end) }
   params:add_control(mix_id, "dry/wet", controlspec.new(0, 1, 'lin', 0, 1), display_mix)
   Core.bind(mix_id, function(value) Core.set(unit.name, "mix", value) end, unit)
   params:hide(mix_id)
@@ -344,7 +322,11 @@ end
 local function add_rack_params()
   local slots = 0
   for _, c in ipairs(Core.chains) do slots = slots + c.size end
-  params:add_group("fx_rack", "fx rack", slots + #Core.names)
+  local with_slot = 0
+  for _, name in ipairs(Core.names) do
+    if Core.units[name].slot_id then with_slot = with_slot + 1 end
+  end
+  params:add_group("fx_rack", "fx rack", slots + #Core.names + with_slot)
 
   Core.view_names = { "none" }
   local labels = { "none" }
@@ -353,33 +335,29 @@ local function add_rack_params()
     table.insert(labels, Core.units[name].label)
   end
 
-  -- a view of the model for editing order; the option list depends on what is
-  -- installed, so it is not saved. Slot + position per unit are saved instead.
+  -- rows for editing the rack: E3 scrolls, K3 applies. Not saved; slot +
+  -- position per unit are, so a PSET does not depend on what is installed.
   for _, c in ipairs(Core.chains) do
     for i = 1, c.size do
-      local id = c.prefix .. i
-      params:add_option(id, c.label .. " " .. i, labels, 1)
-      params:lookup_param(id).save = false
-      params:set_action(id, function(value)
+      params:add{ param = Chooser.new(c.prefix .. i, c.label .. " " .. i, labels, function(value)
         local name = Core.view_names[value]
         if name == "none" then name = nil end
         Core.set_row(c.id, i, name)
-      end)
-      -- a unit that is loaded on another row is shown in parentheses
-      local p = params:lookup_param(id)
-      p.string = function(self)
-        local text = self.options[self.selected]
-        if Core.rack[c.id][i] == nil and Core.pending[c.id][i] ~= nil then
-          return "(" .. text .. ")"
-        end
-        return text
-      end
+      end) }
     end
   end
 
   for _, name in ipairs(Core.names) do
-    local id = "fx_pos_" .. name
     local unit = Core.units[name]
+    -- the saved slot of each unit, under its v1 id
+    if unit.slot_id then
+      params:add_option(unit.slot_id, name .. " slot", Core.slot_options, 1)
+      Core.bind(unit.slot_id, function(value)
+        Core.place_in_chain(name, Core.slot_chain[value] or nil)
+      end)
+      params:hide(unit.slot_id)
+    end
+    local id = "fx_pos_" .. name
     params:add_number(id, name .. " position", 0, 16, 0)
     Core.bind(id, function(value)
       unit.pos = value
@@ -517,9 +495,7 @@ end
 function Core.add_params()
   table.sort(Core.names)
   params:add_separator("fx_mod", "fx")
-  add_rack_params()
-  add_send_params()
-  add_preset_params()
+  -- units first: the rack group needs every unit's slot id
   for _, name in ipairs(Core.names) do
     local unit = Core.units[name]
     local ok, err = true, nil
@@ -532,6 +508,9 @@ function Core.add_params()
     end
     if not ok then print("fx: adding params for " .. name .. " failed: " .. tostring(err)) end
   end
+  add_rack_params()
+  add_send_params()
+  add_preset_params()
   Core.active = true
 end
 

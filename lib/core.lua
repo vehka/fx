@@ -155,8 +155,8 @@ function Core.set_row(chain_id, index, name)
   end
 end
 
---- Put a unit somewhere in a chain: the position a PSET just gave it, else
--- the first free slot, else the last slot.
+--- Put a unit in the first free slot of a chain, or the last slot if the
+-- chain is full. A PSET's position param then moves it to its exact slot.
 function Core.place_in_chain(name, chain_id)
   local old_chain = Core.locate(name)
   if old_chain == chain_id then return end
@@ -164,16 +164,7 @@ function Core.place_in_chain(name, chain_id)
     Core.place(name, nil)
     return
   end
-  local c = chain_by_id[chain_id]
-  local unit = Core.units[name]
-  local want = unit and unit.pos or 0
-  local index
-  if want >= 1 and want <= c.size then
-    index = want
-  else
-    index = first_free(chain_id) or c.size
-  end
-  Core.place(name, chain_id, index)
+  Core.place(name, chain_id, first_free(chain_id) or chain_by_id[chain_id].size)
 end
 
 function Core.clear_rack()

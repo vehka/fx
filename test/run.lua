@@ -232,6 +232,18 @@ check("K3 applies the slot", core.rack.b[1] == "echo" and row("fx_echo_slot_pick
   and params:get("fx_echo_slot") == 3 and row("fx_b_1").name == "send b 1: echo")
 pick("fx_echo_slot_pick", "none")
 check("slot none unloads", core.locate("echo") == nil)
+params:set("fx_distortion_slot", 4)
+params:set("fx_echo_slot", 4)
+pick("fx_echo_slot_pick", "send a")
+check("moving a unit to another chain takes that chain's first free slot", core.rack.a[1] == "echo")
+row("fx_ins_2"):delta(2)
+check("a fast encoder turn moves several steps", row("fx_ins_2").selected == 3)
+row("fx_ins_2"):delta(-0.05)
+check("a fine step counts as one", row("fx_ins_2").selected == 2)
+row("fx_ins_2"):delta(-9)
+check("and it stops at the ends", row("fx_ins_2").selected == 1)
+pick("fx_echo_slot_pick", "none")
+pick("fx_distortion_slot_pick", "none")
 check("choosers are not saved and not mappable", row("fx_ins_1").t == params.tTRIGGER and row("fx_ins_1").allow_pmap == false)
 
 -- unit slot params: these do move things, PSET restore depends on it

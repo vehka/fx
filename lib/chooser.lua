@@ -49,7 +49,8 @@ end
 --- E3: move the candidate. Nothing is applied.
 function Chooser:delta(d)
   if d == 0 then return end
-  local step = d > 0 and 1 or -1
+  -- whole steps; K3 held makes the menu send fractions, which count as one
+  local step = d > 0 and math.ceil(d) or math.floor(d)
   self.selected = math.max(1, math.min(self.count, self.selected + step))
   self:rename()
 end

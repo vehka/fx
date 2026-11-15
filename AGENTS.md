@@ -73,7 +73,9 @@ read from control buses in SC: with softcut through the rack and a steady
 0.1 tone as the engine, the feed carried 0.097 and softcut settled at 0.109
 and stayed there; `audio.level_eng_cut(0.5)` and the LEVELS param moved the
 feed, not crone; with crone's path reopened by hand the idle noise floor
-grew twentyfold in 9 s, which is the loop the feed replaces. After the
+grew twentyfold in 9 s, which is the loop the feed replaces. With awake
+playing (its `out` param is MIDI by default on this shield; set it to audio)
+softcut's peak stayed between 0.13 and 0.23 over 36 s. After the
 second restart the buses are: outputs 0 to 3, `cutBuses` [6, 7], `in_b`
 [8, 9].
 

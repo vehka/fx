@@ -30,15 +30,17 @@ v2 replaces v1 in the same `dust/code/fx` directory: both define
 ## Signal model
 
 ```
-sources: engine (bus 0) | cooperative per-voice sends | (later) ADC, softcut
-main:    PRE taps -> pre sends -> INSERT chain -> POST taps -> post sends -> out
-send X:  tap level -> chain -> return level -> main bus, pre or post insert
+sources: engine (bus 0) | audio inputs | cooperative per-voice sends | (later) softcut
+main:    input -> PRE taps -> pre sends -> INSERT chain -> POST taps -> post sends -> out
+send X:  tap level + other sends -> inlet -> chain -> return level -> main bus, pre or post insert
+                                                   -> level into each other send
 ```
 
 Node tree, inside one group placed directly after `context.og`:
 
 ```
 fx group
+  input       audio inputs (context.in_b) into the main bus, level 0 by default
   preTaps     tap synths of sends with tap = pre
   preSends    send groups whose return is pre-insert
   insert      main chain, in place on bus 0
@@ -46,10 +48,31 @@ fx group
   postSends   send groups whose return is post-insert
 ```
 
-A send group holds the send's chain group followed by its return synth. A
-pre-insert return passes through the inserts. Tap = post with return = pre
-would be a feedback path; until feedback routing exists it is treated as
-return = post.
+A send group holds the send's inlet, its chain group, its return synth and
+one synth per other send (send-to-send). A pre-insert return passes through
+the inserts.
+
+### Send inputs and feedback
+
+A tap and the other sends do not write to the send's chain bus but to a
+second bus, `inBus`. The inlet copies it to the chain bus with `InFeedback`.
+If the writer ran earlier in the same block the copy is immediate; if it runs
+later in the node order, the inlet reads the previous block. So every routing
+is valid, and those that loop are delayed by one block (1.3 ms at 64 frames):
+
+- tap = post with return = pre: out of the inserts, through the send, back
+  into the inserts;
+- a -> b together with b -> a.
+
+The inlet is the loop protection: NaN guard, `LeakDC`, and a limiter without
+lookahead (envelope follower and a clip at full scale), so a send is not
+delayed and signals below full scale pass unchanged. A loop with gain above 1
+settles at the limiter instead of growing.
+
+Cooperating engines write to the chain bus directly, as in v1; the inlet adds
+to it.
+
+The send-to-send synths are muted with the return while the chain is empty.
 
 ### In-place chains
 
@@ -129,7 +152,11 @@ The rack model in Lua is the source of truth; SC executes `/fx/slot`,
 - Unit groups come first in the menu, then fx rack, fx sends and fx presets:
   the rack group needs every unit's slot id.
 - **Sends**: `level` (master tap, so any script can use the send), `tap`
-  (pre/post), `return` level, `dest` (pre/post insert).
+  (pre/post), `return` level, `dest` (pre/post insert), and `to_<other>`
+  (level into each other send).
+- **Input**: `fx_input_level` and `fx_input_mode` (stereo / mono). Crone still
+  mixes the monitor signal after SuperCollider, so the user turns the monitor
+  down to hear only the processed input; the mod does not touch it.
 
 ### Lifecycle
 
@@ -172,8 +199,6 @@ Files are `"id": value` lines, like a PSET.
 
 ## Later steps
 
-4. ADC as a source; send-to-send and feedback routing with `InFeedback` behind
-   a limiter.
 5. Rack page in the mod menu: slots, order, bypass, meters, CPU.
 6. Softcut as a source (extra SC inputs + JACK routes), sidechain and
    modulation control buses, tempo sync, plugins as a single `.sc` file with
@@ -184,6 +209,8 @@ Files are `"id": value` lines, like a PSET.
 
 - `test/click_test.scd`: boots scsynth, feeds a sine through the insert chain,
   performs place / swap / move / bypass / remove, records the output and fails
-  on any sample-to-sample step above a threshold.
+  on any sample-to-sample step above a threshold. It also checks the audio
+  input, that a feedback send keeps ringing after the source stops, and that
+  a loop with gain 4 stays bounded.
 - `test/run.lua`: runs the Lua core against the real norns `paramset` with
   stubbed OSC, covering the rack model, v1 API, PSET write/read and persist.

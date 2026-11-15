@@ -267,6 +267,12 @@ params:set("fx_echo_mode", 2)
 params:set("fx_send_a_level", 0.4)
 params:set("fx_send_a_dest", 1)
 check("send params reach SC", has("/fx/send", "a level 0.4") and has("/fx/send", "a dest 0"))
+params:set("fx_send_a_to_b", 0.3)
+params:set("fx_send_b_to_a", 0.2)
+check("send-to-send levels reach SC", has("/fx/xsend", "a b 0.3") and has("/fx/xsend", "b a 0.2"))
+params:set("fx_input_level", 0.6)
+params:set("fx_input_mode", 2)
+check("input params reach SC", has("/fx/input", "level 0.6") and has("/fx/input", "mono 1"))
 params:write(1)
 local pset = io.open(norns.state.data .. "script-01.pset"):read("*a")
 check("PSET holds slot and position", pset:find('"fx_echo_slot": 4', 1, true) and pset:find('"fx_pos_echo": 1', 1, true))
@@ -284,10 +290,14 @@ check("rack order restored", core.rack.insert[1] == "echo" and core.rack.insert[
 check("restored rack is sent to SC", has("/fx/slot", "insert 1 echo") and has("/fx/slot", "insert 2 fx_distortion"))
 check("restored values are sent to SC", has("/fx/set", "fx_distortion drive 0.8") and has("/fx/send", "a level 0.4"))
 check("view restored", params:string("fx_ins_2") == "distortion")
+check("routing restored and sent to SC", params:get("fx_send_a_to_b") == 0.3 and params:get("fx_input_mode") == 2
+  and has("/fx/xsend", "a b 0.3") and has("/fx/input", "level 0.6") and has("/fx/input", "mono 1"))
 
 stop_script()
 start_script(function() params:add_number("script_param", "script param", 0, 10, 3) end)
 check("a script that reads no PSET starts with an empty rack", core.rack.insert[1] == nil and params:get("fx_distortion_drive") == 0.5)
+check("and with the input and send-to-send levels at zero",
+  params:get("fx_input_level") == 0 and params:get("fx_send_b_to_a") == 0 and has("/fx/input", "level 0") and has("/fx/xsend", "b a 0"))
 
 -- persist on: the rack survives script changes -------------------------------
 core.settings.persist = true

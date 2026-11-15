@@ -28,8 +28,13 @@ Done and tested (Lua test, click test, and on the shield):
 3. Presets: per-effect presets, rack scenes, defaults (`lib/presets.lua`).
 4. Menu UX: rack rows and effect slot rows are scroll-with-E3, apply-with-K3
    (`lib/chooser.lua`).
+5. Routing: audio inputs as a source (`fx_input_*`), send-to-send
+   (`fx_send_a_to_b`, `fx_send_b_to_a`), feedback routing through the send
+   inlets (`FxSend`, `\fxInlet`). On the shield this was checked by node
+   tree, SC state, CPU and xruns only, not by signal or by ear.
 
-Not verified: by ear with real engines and reverbs; the "save as..." name
+Not verified: by ear with real engines and reverbs; the audio input and the
+feedback routings with real signals on the device; the "save as..." name
 entry and the mod settings page on screen; start-up restore from a script's
 own PSET on the device (covered in the Lua test only).
 
@@ -40,10 +45,6 @@ user's older WIP ("WIP engine-driven sends"); leave it alone.
 
 In the order agreed with the user:
 
-- **Step 4, routing:** ADC (`context.in_b`) as a source into the rack;
-  send-to-send; feedback routing (post tap with pre return, B -> A) using
-  `InFeedback` behind a limiter. Today a post tap with a pre return is
-  silently treated as a post return (`FxSend.wantedArea`).
 - **Step 5, rack page in the mod menu:** slots, order, bypass, meters, CPU.
 - **Step 6:** softcut as a source (needs more SC input channels and JACK
   routes via `audio.port_connect` and the
@@ -55,6 +56,8 @@ In the order agreed with the user:
 
 Smaller open items:
 
+- Scenes saved before step 4 do not mention the input and send-to-send
+  params, so loading one leaves those as they are.
 - v1 plugins have no bypass param (their group sizes are fixed). It could go
   in the fx rack group.
 - Params a v1 plugin sets up without the helper API (e.g. `fx_resonator`'s
@@ -128,6 +131,13 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   `Chooser` for anything that loads or moves an effect.
 - **Rack row option lists depend on what is installed**, so rack rows are
   never saved; the per-unit slot and position are.
+- **A send's chain is fed through `InFeedback` from `inBus`**, not from the
+  tap directly. Anything new that feeds a send writes to `inBus`; only
+  cooperating engines write to the chain bus.
+- **A PSET with a post tap and a pre return was a plain post return before
+  step 4** and is now a feedback loop.
+- **The REPL client needs `websocket-client`**, which is not installed on the
+  user's laptop: make a venv outside the repo.
 - **SC dictionary `put` returns the dictionary**, so
   `x = d[k] ?? { d[k] = v }` does not give you `v`.
 - **Mod load order is not alphabetical**, and `system_post_startup` can run

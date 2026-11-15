@@ -76,38 +76,68 @@ FxChain {
 	}
 }
 
-// A send bus: tap from the main bus, its own chain, and a return to the main
-// bus either before or after the insert chain.
+// A send: a tap from the main bus, its own chain, a return to the main bus
+// before or after the insert chain, and a level into every other send.
+//
+// The tap and the other sends write to inBus; the inlet copies it to the
+// chain bus with InFeedback, behind a limiter. A writer that runs later in
+// the node order (post tap with pre return, or a send further down) is then
+// heard one block late instead of not at all, which is what makes feedback
+// routing possible. Cooperating engines write to the chain bus directly.
 FxSend {
-	var <name, <bus, <group, <chain, <tapSynth, <retSynth;
+	var <name, <bus, <inBus, <group, <chain, <tapSynth, <retSynth, <inlet;
 	var <level = 0, <ret = 1, <tap = \pre, <dest = \post;
 	var <area;   // \pre or \post: where the group currently lives
+	var <crossLevels, <crossSynths;   // other send's name -> level, synth
 	var gen = 0;
 
-	*new { |name| ^super.newCopyArgs(name) }
+	*new { |name| ^super.newCopyArgs(name).init }
+
+	init {
+		crossLevels = IdentityDictionary.new;
+		crossSynths = IdentityDictionary.new;
+	}
+
+	// buses first: build needs the other sends' inBus
+	alloc { |server|
+		bus = bus ?? { Bus.audio(server, 2) };
+		inBus = inBus ?? { Bus.audio(server, 2) };
+	}
 
 	build { |server|
-		bus = bus ?? { Bus.audio(server, 2) };
-		area = this.wantedArea;
+		this.alloc(server);
+		area = dest;
 		group = Group.new(FxRack.sendArea(area), \addToTail);
-		chain = FxChain.new(name, bus, Group.new(group, \addToHead), true);
+		inlet = Synth.new(\fxInlet, [\in, inBus, \out, bus], group, \addToHead);
+		chain = FxChain.new(name, bus, Group.new(inlet, \addAfter), true);
 		chain.onChange = { |ch, removed| this.chainChanged(removed) };
 		retSynth = Synth.new(\fxReturn, [
 			\in, bus, \out, FxRack.mainBus, \level, ret, \active, 0
 		], group, \addToTail);
+		FxRack.sends.keysValuesDo { |other, send|
+			if(other != name) {
+				crossSynths[other] = Synth.new(\fxReturn, [
+					\in, bus, \out, send.inBus, \level, crossLevels[other] ? 0, \active, 0
+				], group, \addToTail);
+			};
+		};
 		tapSynth = Synth.new(\fxTap, [
-			\in, FxRack.mainBus, \out, bus, \level, level
+			\in, FxRack.mainBus, \out, inBus, \level, level
 		], FxRack.tapArea(tap), \addToTail);
 	}
 
 	forget {
 		chain !? { chain.forget };
-		group = nil; chain = nil; tapSynth = nil; retSynth = nil;
+		group = nil; chain = nil; tapSynth = nil; retSynth = nil; inlet = nil;
+		crossSynths.clear;
 	}
 
-	// a post-insert tap cannot return before the insert without feedback
-	wantedArea {
-		^if((dest == \pre) and: { tap == \pre }) { \pre } { \post };
+	outputs { ^[retSynth] ++ crossSynths.values }
+
+	// level from this send's chain output into another send
+	setCross { |other, value|
+		crossLevels[other] = value;
+		crossSynths[other] !? { |syn| syn.set(\level, value) };
 	}
 
 	set { |key, value|
@@ -130,7 +160,7 @@ FxSend {
 		SystemClock.sched(0.08, {
 			if((gen == myGen) and: { group.notNil }) {
 				FxRack.server.makeBundle(nil, {
-					area = this.wantedArea;
+					area = dest;
 					group.moveToTail(FxRack.sendArea(area));
 					tapSynth.moveToTail(FxRack.tapArea(tap));
 					retSynth.set(\duck, 1);
@@ -141,7 +171,7 @@ FxSend {
 		});
 	}
 
-	// mute the return while the chain is empty, after the last tail has rung out
+	// mute the outputs while the chain is empty, after the last tail has rung out
 	chainChanged { |removed|
 		if(retSynth.isNil) { ^this };
 		if(chain.isEmpty) {
@@ -149,12 +179,12 @@ FxSend {
 			var myChain = chain;
 			SystemClock.sched(wait, {
 				if((chain === myChain) and: { chain.isEmpty } and: { retSynth.notNil }) {
-					retSynth.set(\active, 0);
+					this.outputs.do { |syn| syn.set(\active, 0) };
 				};
 				nil;
 			});
 		} {
-			retSynth.set(\active, 1);
+			this.outputs.do { |syn| syn.set(\active, 1) };
 		};
 	}
 }
@@ -164,6 +194,8 @@ FxRack {
 	classvar <server, <ready = false, building = false;
 	classvar <group, <preTaps, <preSends, <insertGroup, <postTaps, <postSends;
 	classvar <mainBus, <insert, <sends;
+	classvar <>inBuses;   // two mono bus indices carrying the audio inputs
+	classvar <inputSynth, <inputLevel = 0, <inputMono = 0;
 	classvar <>fade = 0.05;
 	classvar queue;
 	classvar <sendNames;
@@ -196,6 +228,7 @@ FxRack {
 		sends.do { |s| s.forget };
 		insert = nil;
 		group = nil;
+		inputSynth = nil;
 	}
 
 	// Run f now if the rack is built, otherwise once it is.
@@ -229,6 +262,18 @@ FxRack {
 			} {
 				Group.new(server.defaultGroup, \addToTail);
 			};
+			// the audio inputs join the main bus ahead of everything else
+			inBuses = inBuses ?? {
+				if(context.notNil) {
+					context.in_b.collect(_.index);
+				} {
+					server.options.numOutputBusChannels + [0, 1];
+				};
+			};
+			inputSynth = Synth.new(\fxInput, [
+				\in_l, inBuses[0], \in_r, inBuses[1], \out, mainBus,
+				\level, inputLevel, \mono, inputMono
+			], group, \addToHead);
 			preTaps = Group.new(group, \addToTail);
 			preSends = Group.new(group, \addToTail);
 			insertGroup = Group.new(group, \addToTail);
@@ -237,8 +282,9 @@ FxRack {
 			insert = FxChain.new(\insert, mainBus, insertGroup, false);
 			sendNames.do { |n|
 				if(sends[n].isNil) { sends[n] = FxSend.new(n) };
-				sends[n].build(server);
+				sends[n].alloc(server);
 			};
+			sendNames.do { |n| sends[n].build(server) };
 			// v1 engines look these up when they allocate
 			topEnvironment.put(\sendA, sends[\a].bus);
 			topEnvironment.put(\sendB, sends[\b].bus);
@@ -259,6 +305,22 @@ FxRack {
 		SynthDef(\fxReturn, { |in, out, level = 1, active = 0, duck = 1|
 			var amp = Lag.kr(level, 0.05) * Lag.kr(active, 0.05) * Lag.kr(duck, 0.05);
 			Out.ar(out, In.ar(in, 2) * amp);
+		}).send(server);
+
+		SynthDef(\fxInput, { |in_l, in_r, out, level = 0, mono = 0|
+			var l = In.ar(in_l), r = In.ar(in_r);
+			var mid = (l + r) * 0.5;
+			var m = Lag.kr(mono, 0.05);
+			Out.ar(out, [l + ((mid - l) * m), r + ((mid - r) * m)] * Lag.kr(level, 0.05));
+		}).send(server);
+
+		// send input: see FxSend. The limiter has no lookahead, so a send is
+		// not delayed; it is transparent below full scale and keeps a
+		// feedback loop bounded. LeakDC stops a loop latching up on DC.
+		SynthDef(\fxInlet, { |in, out|
+			var sig = LeakDC.ar(FxUnit.guard(InFeedback.ar(in, 2)), 0.9997);
+			var env = Amplitude.ar(max(sig[0].abs, sig[1].abs), 0.001, 0.2);
+			Out.ar(out, (sig / env.max(1)).clip2(1));
 		}).send(server);
 
 		// wrapper halves for v1 plugins, see FxUnit.start
@@ -293,6 +355,13 @@ FxRack {
 		server.makeBundle(nil, { chain.place(index, unit) });
 	}
 
+	*setInput { |key, value|
+		switch(key,
+			\level, { inputLevel = value; inputSynth !? { inputSynth.set(\level, value) } },
+			\mono, { inputMono = value; inputSynth !? { inputSynth.set(\mono, value) } }
+		);
+	}
+
 	*clear {
 		if(ready.not) { ^this };
 		server.makeBundle(nil, {
@@ -323,6 +392,18 @@ FxRack {
 				if(send.notNil) { send.set(key, value) } { ("fx: no send " ++ name).warn };
 			};
 		}, '/fx/send');
+		OSCFunc({ |msg|
+			var from = msg[1].asSymbol, to = msg[2].asSymbol, value = msg[3].asFloat;
+			this.do {
+				var send = sends[from];
+				if(send.notNil and: { sends[to].notNil } and: { from != to }) {
+					send.setCross(to, value);
+				} {
+					("fx: no send path " ++ from ++ " -> " ++ to).warn;
+				};
+			};
+		}, '/fx/xsend');
+		OSCFunc({ |msg| this.setInput(msg[1].asSymbol, msg[2].asFloat) }, '/fx/input');
 		OSCFunc({ this.do { this.clear } }, '/fx/clear');
 		OSCFunc({ |msg| fade = msg[1].asFloat.max(0.005) }, '/fx/fade');
 	}

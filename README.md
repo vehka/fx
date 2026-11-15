@@ -16,8 +16,18 @@ script then has these at the end of its params menu:
 - **fx rack**: what is in each insert and send slot. Inserts run in slot order.
   Turn E3 to scroll through the effects and press K3 to load the one shown; a
   `?` marks a choice that is not loaded yet.
+- **fx input**: the level of the audio inputs into the rack, stereo or summed
+  to mono. The input then passes through the inserts and send taps like the
+  engine does. Turn the norns monitor level down to hear only the processed
+  signal.
 - **fx sends**: per send, the level tapped from the engine output, where it is
-  tapped (pre/post insert), the return level and where it returns.
+  tapped (pre/post insert), the return level, where it returns, and the level
+  from its effects into the other send (delay into reverb).
+
+  Two settings make a feedback loop: a post-insert tap with a pre-insert
+  return, and both "a to send b" and "b to send a" above zero. Each send input
+  has a limiter, so a loop stays below full scale, but it can sustain or howl:
+  bring the levels up slowly.
 - **fx presets**: save and load presets per effect, and scenes of the whole
   rack. "save as default" makes a preset the effect's starting values; "save
   as default rack" makes a scene the rack for scripts that have no fx settings

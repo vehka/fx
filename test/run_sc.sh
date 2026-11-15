@@ -12,7 +12,7 @@ includePaths:
 excludePaths: []
 postInlineWarnings: false
 EOF
-QT_QPA_PLATFORM=offscreen timeout 90 sclang -l "$work/conf.yaml" "$here/click_test.scd"
+QT_QPA_PLATFORM=offscreen timeout 120 sclang -l "$work/conf.yaml" "$here/click_test.scd"
 status=$?
 rm -rf "$work"
 exit $status

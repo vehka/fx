@@ -361,8 +361,16 @@ local function add_rack_params()
   end
 end
 
+local function add_input_params()
+  params:add_group("fx_input", "fx input", 2)
+  params:add_control("fx_input_level", "input level", controlspec.new(0, 1, 'lin', 0, 0))
+  Core.bind("fx_input_level", function(v) send("/fx/input", { "level", v }) end)
+  params:add_option("fx_input_mode", "input mode", { "stereo", "mono" }, 1)
+  Core.bind("fx_input_mode", function(v) send("/fx/input", { "mono", v - 1 }) end)
+end
+
 local function add_send_params()
-  params:add_group("fx_sends", "fx sends", #Core.sends * 4)
+  params:add_group("fx_sends", "fx sends", #Core.sends * (3 + #Core.sends))
   for _, s in ipairs(Core.sends) do
     local prefix = "fx_send_" .. s
     params:add_control(prefix .. "_level", s .. " send level", controlspec.new(0, 1, 'lin', 0, 0))
@@ -373,6 +381,14 @@ local function add_send_params()
     Core.bind(prefix .. "_return", function(v) send("/fx/send", { s, "ret", v }) end)
     params:add_option(prefix .. "_dest", s .. " return to", { "pre insert", "post insert" }, 2)
     Core.bind(prefix .. "_dest", function(v) send("/fx/send", { s, "dest", v - 1 }) end)
+    -- the send's chain output into the other sends; both ways is a feedback loop
+    for _, other in ipairs(Core.sends) do
+      if other ~= s then
+        local id = prefix .. "_to_" .. other
+        params:add_control(id, s .. " to send " .. other, controlspec.new(0, 1, 'lin', 0, 0))
+        Core.bind(id, function(v) send("/fx/xsend", { s, other, v }) end)
+      end
+    end
   end
 end
 
@@ -500,6 +516,7 @@ function Core.add_params()
     if not ok then print("fx: adding params for " .. name .. " failed: " .. tostring(err)) end
   end
   add_rack_params()
+  add_input_params()
   add_send_params()
   add_preset_params()
   Core.active = true

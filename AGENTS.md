@@ -59,11 +59,18 @@ Done and tested (Lua test, click test, and on the shield):
    only: NOTHING of it has run on the shield. The README has a signal graph
    of the whole rack; keep it in step with routing changes.
 
-Not verified on the device, step 6: that `FxRack.initClass` really gets the
-server booted with four inputs under Crone (`SuperCollider:in_3` in
-`audio.input_ports()`), the softcut routes and their restore after a script
-change, whether repatching clicks, that `units.lua` is written before the
-first script reads it, the tempo coroutine, and the new page rows.
+On the shield (2026-11-15, update 260616) step 6's start-up was checked over
+the REPL: the server boots with four inputs (`SuperCollider:in_3/4` exist,
+`FxRack.cutBuses` is [4, 5], `in_b` moved to 6 and 7), `units.lua` is
+written before the mods' start-up hook (empty there: no native unit is
+installed), the seven v1 plugins register, `fx_softcut` repatches softcut and
+back, the routes are made again after a script change, and a tempo change
+reaches `FxRack.bpm`. No `.sc` file on the device uses a literal bus number
+or the server options, so the extra inputs break nothing there.
+
+Not verified on the device, step 6: softcut actually heard through the rack
+and whether repatching clicks, the sidechain, mod buses and copies (they need
+a native unit), a unit from the units file, `fx.request`, the new page rows.
 
 Not verified: the rack page with the physical keys and encoders, above all
 the K1-hold gestures and how the meters look in motion (the user has not
@@ -79,9 +86,11 @@ The plan is implemented; what is left is the device. Check step 6 and the
 second pass of the rack page on the shield (see 7 and 8 above; `test/run.lua`
 uses `page.select(label)`, on the device it is
 `_menu.m["fx"].select("send a")` and so on) and ask the user how it feels in
-the hand. For step 6 start with `audio.input_ports()` after a restart: if
-`SuperCollider:in_3` is not there, the server options were set too late and
-softcut needs another way in. No effect that uses the sidechain, mod or
+the hand. **Open decision, softcut feedback:** with softcut through the rack, crone's
+engine-to-softcut path (`audio.level_eng_cut`, 0 dB by default, set to 1 by
+awake, wrms, bline and others) carries softcut back into softcut. Nothing
+prevents it; see "Softcut" in the design. The user has been asked how to
+resolve it. No effect that uses the sidechain, mod or
 tempo buses exists outside the click test; one is needed to hear them.
 
 Smaller open items:

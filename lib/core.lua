@@ -78,6 +78,8 @@ function Core.register(unit)
   end
   unit.label = unit.label or unit.name:gsub("^fx_", "")
   unit.param_ids = {}
+  unit.mix = 1     -- dry/wet and bypass as SC has them; they outlive the params
+  unit.bypass = 0
   Core.units[unit.name] = unit
   return unit
 end
@@ -167,9 +169,26 @@ function Core.place_in_chain(name, chain_id)
   Core.place(name, chain_id, first_free(chain_id) or chain_by_id[chain_id].size)
 end
 
+--- Exchange two slots of a chain; either may be empty. This is a reorder:
+-- nothing leaves the rack.
+function Core.swap(chain_id, i, j)
+  local slots = Core.rack[chain_id]
+  if i == j or slots[i] == slots[j] then return end
+  local before = snapshot()
+  slots[i], slots[j] = slots[j], slots[i]
+  commit(before)
+end
+
 function Core.clear_rack()
   for _, c in ipairs(Core.chains) do Core.rack[c.id] = {} end
   send("/fx/clear")
+end
+
+local function rack_is_empty()
+  for _, c in ipairs(Core.chains) do
+    if next(Core.rack[c.id]) ~= nil then return false end
+  end
+  return true
 end
 
 --- Send the whole model. Idempotent on the SC side.
@@ -183,6 +202,29 @@ end
 
 function Core.set(name, key, value)
   send("/fx/set", { name, key, value })
+end
+
+-- Set a unit's dry/wet or bypass from outside the params menu. With a script
+-- running the param does the work, so menu, PSET and SC stay in step;
+-- without one the model and SC are set, and the next script's param follows.
+local function set_unit_value(name, key, id, value)
+  local unit = Core.units[name]
+  if not unit then return end
+  if Core.active and id and params.lookup[id] then
+    params:set(id, value)
+  else
+    unit[key] = value
+    if id then Core.live[id] = value end
+    Core.set(name, key, value)
+  end
+end
+
+function Core.set_mix(name, value)
+  set_unit_value(name, "mix", Core.units[name] and Core.units[name].mix_id, util.clamp(value, 0, 1))
+end
+
+function Core.set_bypass(name, on)
+  set_unit_value(name, "bypass", Core.units[name] and Core.units[name].bypass_id, on and 1 or 0)
 end
 
 ----------------------------------------------------------------------------
@@ -274,7 +316,10 @@ function Core.add_slot_params(unit, slot_id, slot_name, mix_id)
     Core.sync_params()
   end) }
   params:add_control(mix_id, "dry/wet", controlspec.new(0, 1, 'lin', 0, 1), display_mix)
-  Core.bind(mix_id, function(value) Core.set(unit.name, "mix", value) end, unit)
+  Core.bind(mix_id, function(value)
+    unit.mix = value
+    Core.set(unit.name, "mix", value)
+  end, unit)
   params:hide(mix_id)
 end
 
@@ -298,6 +343,15 @@ local function add_native_param(unit, p)
   Core.bind(id, function(value) Core.set(unit.name, p.id, value) end, unit)
 end
 
+local function add_bypass_param(unit, id, name)
+  unit.bypass_id = id
+  params:add_binary(id, name, "toggle", 0)
+  Core.bind(id, function(value)
+    unit.bypass = value
+    Core.set(unit.name, "bypass", value)
+  end)
+end
+
 local function add_native_unit(unit)
   local list = unit.params
   if type(list) == "function" then list = list() end
@@ -305,19 +359,19 @@ local function add_native_unit(unit)
   local prefix = "fx_" .. unit.name
   params:add_group(prefix, unit.title or unit.label, #list + 3)
   Core.add_slot_params(unit, prefix .. "_slot", "slot", prefix .. "_mix")
-  params:add_binary(prefix .. "_bypass", "bypass", "toggle", 0)
-  Core.bind(prefix .. "_bypass", function(value) Core.set(unit.name, "bypass", value) end)
+  add_bypass_param(unit, prefix .. "_bypass", "bypass")
   for _, p in ipairs(list) do add_native_param(unit, p) end
 end
 
 local function add_rack_params()
   local slots = 0
   for _, c in ipairs(Core.chains) do slots = slots + c.size end
-  local with_slot = 0
+  local with_slot, without_bypass = 0, 0
   for _, name in ipairs(Core.names) do
     if Core.units[name].slot_id then with_slot = with_slot + 1 end
+    if not Core.units[name].bypass_id then without_bypass = without_bypass + 1 end
   end
-  params:add_group("fx_rack", "fx rack", slots + #Core.names + with_slot)
+  params:add_group("fx_rack", "fx rack", slots + #Core.names + with_slot + without_bypass)
 
   Core.view_names = { "none" }
   local labels = { "none" }
@@ -335,6 +389,14 @@ local function add_rack_params()
         if name == "none" then name = nil end
         Core.set_row(c.id, i, name)
       end) }
+    end
+  end
+
+  -- v1 plugin groups have a fixed size, so their bypass lives here
+  for _, name in ipairs(Core.names) do
+    local unit = Core.units[name]
+    if not unit.bypass_id then
+      add_bypass_param(unit, "fx_bypass_" .. name, unit.label .. " bypass")
     end
   end
 
@@ -563,13 +625,22 @@ end
 function Core.restore()
   local presets = require 'fx/lib/presets'
   presets.apply_defaults()
-  local have_live = Core.settings.persist and next(Core.live) ~= nil
+  -- the rack may have been set up on the rack page before any script ran
+  local have_live = Core.settings.persist and (next(Core.live) ~= nil or not rack_is_empty())
   if have_live then
     -- station mode: the rack kept running; params take the live values
     for _, id in ipairs(Core.ids) do
       local value = Core.live[id]
       if value ~= nil then params:set(id, value, true) end
     end
+    -- the model wins over anything stale in the live values: it may have
+    -- been edited on the rack page while no script, and so no param, existed
+    for _, name in ipairs(Core.names) do
+      local unit = Core.units[name]
+      if unit.mix_id and params.lookup[unit.mix_id] then params:set(unit.mix_id, unit.mix, true) end
+      if unit.bypass_id and params.lookup[unit.bypass_id] then params:set(unit.bypass_id, unit.bypass, true) end
+    end
+    Core.sync_params()
   else
     local found = 0
     if Core.pset_file then found = Core.read_file(Core.pset_file, Core.is_fx_id) end
@@ -605,7 +676,7 @@ function Core.pre_init()
   Core.is_fx_id = {}
   for _, name in ipairs(Core.names) do
     local unit = Core.units[name]
-    unit.slot_id, unit.mix_id, unit.params_added = nil, nil, false
+    unit.slot_id, unit.mix_id, unit.bypass_id, unit.params_added = nil, nil, nil, false
     unit.param_ids = {}
   end
   -- note which PSET the script reads in init; its fx values are applied once
@@ -630,7 +701,12 @@ function Core.post_cleanup()
   if not Core.settings.persist then
     Core.clear_rack()
     Core.live = {}
-    for _, name in ipairs(Core.names) do Core.units[name].pos = nil end
+    for _, name in ipairs(Core.names) do
+      local unit = Core.units[name]
+      unit.pos = nil
+      if unit.mix ~= 1 then unit.mix = 1; Core.set(name, "mix", 1) end
+      if unit.bypass ~= 0 then unit.bypass = 0; Core.set(name, "bypass", 0) end
+    end
   end
 end
 

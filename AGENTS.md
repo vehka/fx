@@ -35,8 +35,17 @@ Done and tested (Lua test, click test, and on the shield):
    the user confirmed the feedback routing and the audio input by ear
    (2026-11-15).
 
-Not verified: the "save as..." name
-entry and the mod settings page on screen; start-up restore from a script's
+6. Rack page (`lib/page.lua`): slots, order, bypass, dry/wet, meters, CPU,
+   and the two settings as its last rows. Bypass for every unit, v1 included.
+   The layout and the controls were chosen by the user from mock-ups. On the
+   shield (2026-11-15) the page was driven over the REPL by calling its
+   `key`/`enc` and checked by screenshots and SC state, with awake and with
+   no script; meters were checked with a test tone. No xruns while the page
+   was open.
+
+Not verified: the rack page with the physical keys and encoders, above all
+the K1-hold gestures and how the meters look in motion (the user has not
+tried it yet); the "save as..." name entry; start-up restore from a script's
 own PSET on the device (covered in the Lua test only).
 
 Nothing is pushed. `git stash` on `feature/pre-post-insert-sends` holds the
@@ -44,30 +53,9 @@ user's older WIP ("WIP engine-driven sends"); leave it alone.
 
 ## Next
 
-In the order agreed with the user:
+Ask the user how the rack page feels in the hand first; then, in the order
+agreed with the user:
 
-- **Step 5, rack page in the mod menu:** slots, order, bypass, meters, CPU.
-  This is the next thing to do. Starting points:
-  - The page is the `menu` table in `lib/mod.lua` (`mods.menu.register`),
-    today two settings rows. Keep those reachable.
-  - Change the rack through `Core.set_row` / `Core.place` and the bypass and
-    mix params, so the params menu, PSETs and the live state stay in step.
-    The page also has to work with no script loaded (`Core.active` false: no
-    params exist, the model and SC still do).
-  - Order: `Core.place(name, chain, index)` swaps with the occupant. On the
-    SC side a move is release + start, so it crossfades.
-  - v1 units have no bypass param yet (see below); the page needs one for
-    every unit, so do that first.
-  - Meters and CPU need data from SC that does not exist yet. Crone's own
-    polls (`amp_out_l/r`, `cpu_avg`, `cpu_peak`) are script-owned and reset
-    at script change; a mod-owned path is an `OSCFunc`-side `SendReply` or a
-    routine in `FxRack` sending to matron (port 10111) and an `osc.event`
-    handler, which must chain any handler the script sets. Decide and
-    record it in `docs/DESIGN.md`.
-  - Redraw only while the page is open (`menu.init` / `menu.deinit`), at a
-    fixed rate, and stop the meter traffic when it closes.
-  - Agree the layout with the user before building much; screenshots from
-    the device (see "On the device") are the quickest way to show it.
 - **Step 6:** softcut as a source (needs more SC input channels and JACK
   routes via `audio.port_connect` and the
   `audio_post_restore_default_routing` hook; whether a mod can raise
@@ -80,8 +68,10 @@ Smaller open items:
 
 - Scenes saved before step 4 do not mention the input and send-to-send
   params, so loading one leaves those as they are.
-- v1 plugins have no bypass param (their group sizes are fixed). It could go
-  in the fx rack group.
+- Rack page ideas not done: a send's level and return on the page, moving
+  an effect between chains with K1 + E2, clipping hold on the meters.
+- If matron restarts on its own while the page is open, SC keeps sending
+  meter messages until the page is opened and closed again.
 - Params a v1 plugin sets up without the helper API (e.g. `fx_resonator`'s
   note and model) are not in presets or the live state.
 - Factory preset lookup fails if a plugin writes `return fx.register{...}` as
@@ -116,7 +106,12 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   and the Lua modules are cached by `require` and shared with the plugin mods.
 - Menus can be driven with `_menu.set_page("PARAMS")`, `_menu.set_mode(true)`,
   `_menu.enc(n, d)`, `_menu.key(n, z)`, and captured with
-  `_norns.screen_export_screenshot("/tmp/x.png")`.
+  `_norns.screen_export_screenshot("/tmp/x.png")`. The rack page is
+  `_menu.set_page("fx")`; call `_menu.m["fx"].key(n, z)` and `.enc(n, d)`
+  directly, since K1 does not go through `_menu.key`.
+- A known signal for the meters, from the sclang REPL:
+  `~t = { Out.ar(0, SinOsc.ar(330, 0, 0.1) ! 2) }.play(target: Crone.context.xg);`
+  then `~t.free;`.
 - For multi-line code, copy a file to `/tmp` and `dofile` / `.load` it.
 - The click test can run inside the device's sclang: take
   `test/click_test.scd`, remove the server boot/quit/exit lines, and load it.
@@ -165,6 +160,14 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
 - **Pre tap with pre return is not a loop**: the return lands after the tap
   point. Feedback needs a post tap with a pre return, or both send-to-send
   levels with an effect on each send.
+- **A long K1 press reaches a menu page late.** `_menu.alt` is true from the
+  moment K1 goes down, `key(1, 1)` arrives after the long-press timer, and a
+  short press never arrives: it leaves the menu. The page reads `_menu.alt`.
+- **The node tree dump does not list the children of a paused group**, so a
+  bypassed v1 unit looks like an empty group. Its synths are still there.
+- **Restarting the shield can take two minutes**: a leftover `nullcast-rx`
+  process holds up the stop of `norns-main` until systemd kills it after
+  90 s. Poll the REPL until it answers instead of sleeping a fixed time.
 - **SC dictionary `put` returns the dictionary**, so
   `x = d[k] ?? { d[k] = v }` does not give you `v`.
 - **Mod load order is not alphabetical**, and `system_post_startup` can run

@@ -28,7 +28,11 @@ _norns = {
     return out
   end,
 }
-_menu = { rebuilds = 0, rebuild_params = function() _menu.rebuilds = _menu.rebuilds + 1 end }
+_menu = {
+  rebuilds = 0,
+  rebuild_params = function() _menu.rebuilds = _menu.rebuilds + 1 end,
+  binarystates = { on = {}, triggered = {} },
+}
 util = require 'util'
 tab = require 'tabutil'
 controlspec = require 'core/controlspec'
@@ -39,13 +43,20 @@ local sent = {}
 osc = { send = function(to, path, args) table.insert(sent, { path = path, args = args or {} }) end }
 
 local hooks = {}
+local page, redraws, exits = nil, 0, 0
 package.preload['core/mods'] = function()
   return {
     this_name = "fx",
     hook = { register = function(which, name, fn) hooks[which] = hooks[which] or {}; hooks[which][name] = fn end },
-    menu = { register = function() end, redraw = function() end, exit = function() end },
+    menu = {
+      register = function(_, m) page = m end,
+      redraw = function() redraws = redraws + 1 end,
+      exit = function() exits = exits + 1 end,
+    },
   }
 end
+-- drawing calls do nothing
+screen = setmetatable({}, { __index = function() return function() end end })
 
 -- textentry answers with whatever the test queued
 local typed
@@ -421,6 +432,106 @@ start_script(function()
 end)
 check("fx values in the script's PSET win over the default scene",
   params:get("fx_distortion_drive") == 0.8 and core.rack.insert[2] == "fx_distortion")
+
+-- the rack page -------------------------------------------------------------
+-- rows: ins 1-4, a 1-2, b 1-2, keep rack, fade. The cursor starts on ins 1.
+local function near(a, b) return math.abs(a - b) < 0.001 end
+stop_script()
+core.settings.persist = true
+start_script() -- the default scene: echo in insert 1
+local script_osc = {}
+osc.event = function(path) table.insert(script_osc, path) end
+local script_handler = osc.event
+sent = {}
+page.init()
+check("opening the page starts the meters", has("/fx/meter", "1"))
+page.key(3, 1)
+check("K3 bypasses the selected effect through its param",
+  params:get("fx_echo_bypass") == 1 and has("/fx/set", "echo bypass 1") and core.units.echo.bypass == 1)
+page.key(3, 1)
+check("and again un-bypasses", params:get("fx_echo_bypass") == 0 and core.units.echo.bypass == 0)
+page.enc(3, -5)
+check("E3 sets the dry/wet of an insert", near(params:get("fx_echo_mix"), 0.95) and near(core.units.echo.mix, 0.95))
+page.enc(2, 1)
+sent = {}
+page.key(1, 1)
+page.enc(3, 1) -- none -> distortion; the choices are sorted by label
+check("K1 + E3 scrolls without loading", #messages("/fx/slot") == 0 and core.rack.insert[2] == nil)
+page.key(1, 0)
+check("releasing K1 loads the effect shown",
+  core.rack.insert[2] == "fx_distortion" and has("/fx/slot", "insert 2 fx_distortion") and params:string("fx_ins_2") == "distortion")
+page.key(1, 1)
+page.enc(2, -1)
+page.key(1, 0)
+check("K1 + E2 moves the effect and swaps with its neighbour",
+  core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == "echo"
+  and params:get("fx_pos_echo") == 2 and params:get("fx_pos_fx_distortion") == 1)
+page.key(1, 1)
+page.enc(2, -1)
+page.key(1, 0)
+check("a move stops at the end of the chain", core.rack.insert[1] == "fx_distortion")
+page.key(3, 1) -- the cursor followed the move
+check("a v1 unit has a bypass too",
+  params:get("fx_bypass_fx_distortion") == 1 and has("/fx/set", "fx_distortion bypass 1"))
+page.key(3, 1)
+redraws = 0
+osc.event("/fx/meter", { 0.5, 0, 0.1, 1.2, 17, 24 })
+osc.event("/something/else", {})
+check("a meter message redraws the page and is not passed to the script", redraws == 1 and #script_osc == 1)
+check("other OSC still reaches the script", script_osc[1] == "/something/else")
+check("the page draws", pcall(page.redraw))
+for _ = 1, 9 do page.enc(2, 1) end
+page.enc(3, 1)
+check("the settings are the last rows", near(core.settings.fade, 0.06))
+page.enc(3, -1)
+sent = {}
+page.deinit()
+check("closing the page stops the meters and gives osc.event back",
+  has("/fx/meter", "0") and osc.event == script_handler)
+osc.event = nil
+
+-- with no script loaded the page edits the model and SC directly
+stop_script()
+sent = {}
+page.init()
+for _ = 1, 9 do page.enc(2, -1) end
+page.enc(2, 1) -- ins 2: echo
+page.enc(3, -10)
+page.key(3, 1)
+check("without a script dry/wet and bypass go straight to SC",
+  near(core.units.echo.mix, 0.85) and core.units.echo.bypass == 1 and has("/fx/set", "echo bypass 1")
+  and #messages("/fx/set") == 2)
+page.enc(2, 1) -- ins 3
+page.key(1, 1)
+for _ = 1, 20 do page.enc(3, 1) end -- the last choice: res
+page.key(1, 0)
+check("and effects can be loaded", core.rack.insert[3] == "fx_res" and has("/fx/slot", "insert 3 fx_res"))
+page.deinit()
+start_script(script_init) -- reads PSET 1; the live rack wins
+check("the next script's params take up what the page did",
+  core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == "echo" and core.rack.insert[3] == "fx_res"
+  and params:get("fx_res_slot") == 4 and params:get("fx_pos_fx_res") == 3
+  and params:get("fx_echo_bypass") == 1 and near(params:get("fx_echo_mix"), 0.85))
+check("and SC is told the same", has("/fx/set", "echo bypass 1") and has("/fx/slot", "insert 3 fx_res"))
+
+-- a rack built on the page before any script ran
+stop_script()
+core.clear_rack()
+core.live = {}
+page.init()
+for _ = 1, 9 do page.enc(2, -1) end
+page.key(1, 1)
+page.enc(3, 2) -- one step per detent: distortion
+page.key(1, 0)
+page.deinit()
+start_script(script_init)
+check("a rack set up before the first script survives its start",
+  core.rack.insert[1] == "fx_distortion" and params:get("fx_distortion_slot") == 4 and core.rack.insert[2] == nil)
+
+core.settings.persist = false
+stop_script()
+check("persist off resets dry/wet and bypass at cleanup",
+  core.units.echo.bypass == 0 and core.units.echo.mix == 1 and has("/fx/set", "echo bypass 0"))
 
 os.execute("rm -rf " .. tmp)
 quiet_print(failures == 0 and ("PASS (" .. count .. " checks)") or ("FAILED: " .. failures .. " of " .. count))

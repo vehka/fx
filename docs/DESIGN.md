@@ -125,7 +125,9 @@ same mix/tail maths, frees the group). `~sendA`, `~sendB`, `FxSetup.sendA` and
 ## Lua model
 
 The rack model in Lua is the source of truth; SC executes `/fx/slot`,
-`/fx/set`, `/fx/send`, `/fx/clear`.
+`/fx/set`, `/fx/send`, `/fx/clear`. Each unit's dry/wet and bypass are part of
+the model too (`unit.mix`, `unit.bypass`), so they exist when no script, and
+so no param, does.
 
 - **Units** are registered once at mod load, by the v1 API
   (`fx:new{subpath=...}` + `add_params`) or the declarative v2 API
@@ -151,6 +153,9 @@ The rack model in Lua is the source of truth; SC executes `/fx/slot`,
   rack if the chain is full, so the result does not depend on line order.
 - Unit groups come first in the menu, then fx rack, fx sends and fx presets:
   the rack group needs every unit's slot id.
+- **Bypass** is a param of every unit: `fx_<unit>_bypass` in a v2 unit's own
+  group, `fx_bypass_<unit>` in the fx rack group for a v1 plugin, whose group
+  size is fixed.
 - **Sends**: `level` (master tap, so any script can use the send), `tap`
   (pre/post), `return` level, `dest` (pre/post insert), and `to_<other>`
   (level into each other send).
@@ -174,6 +179,53 @@ Restoring values at `script_post_init`:
   from the PSET the script loaded in `init`.
 
 PSETs loaded later from the params menu read fx params natively.
+
+With persist on, the model wins at script start: slot, position, dry/wet and
+bypass params are set from it before they are banged. A rack built on the
+rack page before any script ran is therefore kept, and counts as live state
+even though no param value was ever recorded. With persist off the script's
+PSET or the default scene decides, as before.
+
+## Rack page
+
+The mod's menu page (SYSTEM > MODS > fx, `lib/page.lua`) lists the eight
+slots in signal order, then the two settings. It reads the model and changes
+it only through the core (`set_row`, `swap`, `set_mix`, `set_bypass`), which
+go through the params when a script is running and straight to the model and
+SC when none is. So the params menu, PSETs and the page agree, and the page
+works with no script loaded.
+
+| Control | Action |
+|---|---|
+| E2 | select a row |
+| E3 | dry/wet of an insert; value of a setting |
+| K3 | bypass |
+| K1 + E2 | move the effect within its chain (swaps with the neighbour) |
+| K1 + E3 | scroll through the effects; releasing K1 loads the one shown |
+| K2 | back |
+
+Loading is scroll-then-confirm here as well: nothing is loaded while K1 is
+held. The menu delivers a long K1 press to a page only after a delay, so the
+page also reads `_menu.alt`, the menu's own "K1 is down" state. That is an
+internal; without it the page still works but the first encoder steps after
+pressing K1 would be taken as unmodified.
+
+### Meters and CPU
+
+Crone's polls belong to the script and are reset when it changes, so the
+page has its own path. While the page is open (`/fx/meter 1`, `0` when it
+closes) two synths run in the fx group: one after the input synth writes the
+level at the rack's input to a control bus, one at the tail reads that bus,
+each send's chain bus and the main bus, and sends all four with `SendReply`
+at 15 Hz. sclang adds `avgCPU` and `peakCPU` and forwards the lot to matron's
+OSC port (10111) as `/fx/meter in a b out cpuAvg cpuPeak`. Levels are peak
+followers over both channels; the page draws them on a 48 dB scale.
+
+On the Lua side `osc.event` is one slot owned by the script. The page puts
+its handler there while it is open, passes everything but `/fx/meter` to the
+handler it found, and gives the slot back on closing. Each meter message
+redraws the page, so there is no timer: the redraw rate is the meter rate,
+and both stop together.
 
 ## Presets
 
@@ -199,7 +251,6 @@ Files are `"id": value` lines, like a PSET.
 
 ## Later steps
 
-5. Rack page in the mod menu: slots, order, bypass, meters, CPU.
 6. Softcut as a source (extra SC inputs + JACK routes), sidechain and
    modulation control buses, tempo sync, plugins as a single `.sc` file with
    params read from SynthDef metadata, multiple instances per unit, a script
@@ -210,7 +261,8 @@ Files are `"id": value` lines, like a PSET.
 - `test/click_test.scd`: boots scsynth, feeds a sine through the insert chain,
   performs place / swap / move / bypass / remove, records the output and fails
   on any sample-to-sample step above a threshold. It also checks the audio
-  input, that a feedback send keeps ringing after the source stops, and that
-  a loop with gain 4 stays bounded.
+  input, that a feedback send keeps ringing after the source stops, that
+  a loop with gain 4 stays bounded, and the meter readings.
 - `test/run.lua`: runs the Lua core against the real norns `paramset` with
-  stubbed OSC, covering the rack model, v1 API, PSET write/read and persist.
+  stubbed OSC, covering the rack model, v1 API, PSET write/read, persist and
+  the rack page's controls.

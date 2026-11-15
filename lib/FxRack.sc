@@ -197,6 +197,8 @@ FxRack {
 	classvar <>inBuses;   // two mono bus indices carrying the audio inputs
 	classvar <inputSynth, <inputLevel = 0, <inputMono = 0;
 	classvar <>fade = 0.05;
+	classvar <meterIn, <meterOut, meterBus;
+	classvar <>matron;   // where meter and CPU readings go: matron's OSC port
 	classvar queue;
 	classvar <sendNames;
 
@@ -229,6 +231,8 @@ FxRack {
 		insert = nil;
 		group = nil;
 		inputSynth = nil;
+		meterIn = nil;
+		meterOut = nil;
 	}
 
 	// Run f now if the rack is built, otherwise once it is.
@@ -323,6 +327,22 @@ FxRack {
 			Out.ar(out, (sig / env.max(1)).clip2(1));
 		}).send(server);
 
+		// meters, running only while the rack page is open. The level at the
+		// rack's input is taken at the head of the group and passed on a
+		// control bus, so one reply carries every reading.
+		SynthDef(\fxMeterIn, { |in, out|
+			Out.kr(out, FxRack.level(In.ar(in, 2)));
+		}).send(server);
+
+		SynthDef(\fxMeterOut, { |main, a, b, in, rate = 15|
+			SendReply.kr(Impulse.kr(rate), '/fxMeter', [
+				In.kr(in),
+				FxRack.level(In.ar(a, 2)),
+				FxRack.level(In.ar(b, 2)),
+				FxRack.level(In.ar(main, 2))
+			]);
+		}).send(server);
+
 		// wrapper halves for v1 plugins, see FxUnit.start
 		SynthDef(\fxLegacyPre, { |fx_bus, fx_in, fx_gate = 1, fx_bypass = 0, fx_fade = 0.05|
 			var on = EnvGen.kr(Env.asr(fx_fade, 1, fx_fade, \sine), fx_gate);
@@ -360,6 +380,33 @@ FxRack {
 			\level, { inputLevel = value; inputSynth !? { inputSynth.set(\level, value) } },
 			\mono, { inputMono = value; inputSynth !? { inputSynth.set(\mono, value) } }
 		);
+	}
+
+	// peak follower over both channels, at control rate
+	*level { |sig|
+		^A2K.kr(Amplitude.ar(max(sig[0].abs, sig[1].abs), 0.005, 0.3));
+	}
+
+	// Meters: rack input, the output of each send's chain, rack output.
+	// Readings go to matron as /fx/meter in a b out cpuAvg cpuPeak.
+	*setMeter { |on|
+		if(on) {
+			if(meterOut.isNil) {
+				meterBus = meterBus ?? { Bus.control(server, 1) };
+				server.makeBundle(nil, {
+					meterIn = Synth.new(\fxMeterIn, [\in, mainBus, \out, meterBus],
+						inputSynth, \addAfter);
+					meterOut = Synth.new(\fxMeterOut, [
+						\main, mainBus, \a, sends[\a].bus, \b, sends[\b].bus, \in, meterBus
+					], group, \addToTail);
+				});
+			};
+		} {
+			meterIn !? { meterIn.free };
+			meterOut !? { meterOut.free };
+			meterIn = nil;
+			meterOut = nil;
+		};
 	}
 
 	*clear {
@@ -406,5 +453,16 @@ FxRack {
 		OSCFunc({ |msg| this.setInput(msg[1].asSymbol, msg[2].asFloat) }, '/fx/input');
 		OSCFunc({ this.do { this.clear } }, '/fx/clear');
 		OSCFunc({ |msg| fade = msg[1].asFloat.max(0.005) }, '/fx/fade');
+		OSCFunc({ |msg|
+			var on = msg[1].asInteger > 0;
+			this.do { this.setMeter(on) };
+		}, '/fx/meter');
+		matron = matron ?? { NetAddr("127.0.0.1", 10111) };
+		OSCFunc({ |msg|
+			if(meterOut.notNil and: { msg[1] == meterOut.nodeID }) {
+				matron.sendMsg('/fx/meter', msg[3], msg[4], msg[5], msg[6],
+					server.avgCPU ? 0, server.peakCPU ? 0);
+			};
+		}, '/fxMeter');
 	}
 }

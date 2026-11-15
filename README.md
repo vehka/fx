@@ -36,8 +36,29 @@ script then has these at the end of its params menu:
   K3, as in the rack), dry/wet and the effect's own params.
 
 Effects fade in and out, and tails ring out when an effect is removed or
-bypassed. The mod's settings page (SYSTEM > MODS > fx) sets the fade time and
-whether the rack keeps running across script changes.
+bypassed. Every effect has a bypass: in its own group, or for older (v1)
+plugins in **fx rack** as "<effect> bypass".
+
+### The rack page
+
+SYSTEM > MODS > fx shows the whole rack: the four inserts and the two slots
+of each send, with each insert's dry/wet (or `byp` when bypassed), meters for
+the rack input (i), the two sends (a, b) and the rack output (o), and the
+average / peak CPU of SuperCollider. It works with or without a script.
+
+| | |
+|---|---|
+| E2 | select a slot |
+| E3 | dry/wet (inserts) |
+| K3 | bypass on/off |
+| K1 + E2 | move the effect up or down in its chain |
+| K1 + E3 | scroll through the effects, release K1 to load the one shown (`-` empties the slot) |
+| K2 | back |
+
+Below the slots are two settings, changed with E3: **keep rack** (the rack
+keeps running across script changes; a rack you set up here is then kept
+when a script starts) and **fade**, the fade time for loading and bypass.
+With keep rack off, each script starts from its own PSET or the default rack.
 
 ## Writing an effect
 

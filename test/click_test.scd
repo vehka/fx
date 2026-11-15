@@ -45,6 +45,9 @@ FxUnit.register(\unity, { |in| in });
 fork { try {
 	var s = Server.default, buf, src, inSrc, rec, data, t0, at, mark = 0, marks = ();
 	var step = { |name, dur, f| marks[name] = mark; f.value; dur.wait; mark = mark + dur };
+	var meterDry, meterDrive, meterCount = 0, lastMeter;
+	// stands in for matron: keeps the last /fx/meter message
+	FxRack.matron = (sendMsg: { |self ... msg| lastMeter = msg; meterCount = meterCount + 1 });
 	s.bootSync;
 	FxRack.ensure;
 	while { FxRack.ready.not } { 0.1.wait };
@@ -63,8 +66,11 @@ fork { try {
 		rec = Synth(\testRec, [\in, 0, \buf, buf], s.defaultGroup, \addToTail);
 	});
 
-	step.(\dry, 0.5, { });
+	step.(\dry, 0.5, { FxRack.setMeter(true) });
+	meterDry = lastMeter;
 	step.(\place, 0.5, { FxRack.place(\insert, 1, \drive) });
+	meterDrive = lastMeter;
+	FxRack.setMeter(false);
 	step.(\swap, 0.5, { FxRack.place(\insert, 1, \echo) });
 	step.(\add, 0.5, { FxRack.place(\insert, 2, \drive) });
 	step.(\reorder, 0.5, { FxRack.place(\insert, 1, \drive); FxRack.place(\insert, 2, \echo) });
@@ -139,6 +145,15 @@ fork { try {
 	check.("silent once the tails are over (rms %)".format(rms.(data, marks[\end] - 0.4, marks[\end] - 0.1).round(0.00001)),
 		rms.(data, marks[\end] - 0.4, marks[\end] - 0.1) < 0.0005);
 	check.("no nodes left in the insert chain", FxRack.insert.isEmpty);
+	check.("meters report the input and output level (dry: in %, out %)".format(meterDry[1].round(0.01), meterDry[4].round(0.01)),
+		meterDry.notNil and: { meterDry[0] == '/fx/meter' } and: { (meterDry[1] - 0.5).abs < 0.05 }
+			and: { (meterDry[4] - 0.5).abs < 0.05 });
+	check.("the output meter is taken after the inserts (drive: in %, out %)".format(meterDrive[1].round(0.01), meterDrive[4].round(0.01)),
+		((meterDrive[1] - 0.5).abs < 0.05) and: { meterDrive[4] > 0.8 });
+	check.("an unused send reads zero, and CPU is reported",
+		(meterDry[2] < 0.001) and: { meterDry[3] < 0.001 } and: { meterDry[5].isNumber } and: { meterDry[6].isNumber });
+	check.("meters stop when switched off (% readings)".format(meterCount),
+		FxRack.meterOut.isNil and: { meterCount > 8 } and: { meterCount < 22 });
 	check.("audio input reaches the output (rms %)".format(rms.(data, marks[\input] + 0.2, marks[\input] + 0.45).round(0.001)),
 		rms.(data, marks[\input] + 0.2, marks[\input] + 0.45) > 0.15);
 	check.("and is silent at level 0", rms.(data, marks[\fbOn] - 0.15, marks[\fbOn] - 0.02) < 0.0005);

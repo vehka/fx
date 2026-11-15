@@ -43,6 +43,15 @@ Done and tested (Lua test, click test, and on the shield):
    no script; meters were checked with a test tone. No xruns while the page
    was open.
 
+7. Rack page, second pass (asked for by the user after trying the first):
+   K1 + K3 opens a row (an effect's params, a send's or the input's
+   routing), rows for the input and each send level, and rows to load and
+   save racks (scenes). Lua test only: it was copied to the shield and the
+   shield restarted, but NOT checked there, by screenshot or by hand.
+   `docs/DESIGN.md` and `README.md` still describe the first pass; update
+   their rack page sections (controls table, row list, "needs a running
+   script" for param rows) before anything else.
+
 Not verified: the rack page with the physical keys and encoders, above all
 the K1-hold gestures and how the meters look in motion (the user has not
 tried it yet); the "save as..." name entry; start-up restore from a script's

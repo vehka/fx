@@ -559,6 +559,8 @@ local function add_preset_params()
 
   refresh_presets()
   refresh_scenes()
+  -- for the rack page, which saves scenes too
+  Core.refresh_scenes = refresh_scenes
 end
 
 function Core.add_params()
@@ -697,6 +699,7 @@ end
 function Core.post_cleanup()
   rawset(params, "read", nil)
   Core.active = false
+  Core.refresh_scenes = nil
   Core.pset_file = nil
   if not Core.settings.persist then
     Core.clear_rack()

@@ -434,7 +434,7 @@ check("fx values in the script's PSET win over the default scene",
   params:get("fx_distortion_drive") == 0.8 and core.rack.insert[2] == "fx_distortion")
 
 -- the rack page -------------------------------------------------------------
--- rows: ins 1-4, a 1-2, b 1-2, keep rack, fade. The cursor starts on ins 1.
+-- The cursor starts on ins 1; page.select(label) puts it on a row.
 local function near(a, b) return math.abs(a - b) < 0.001 end
 stop_script()
 core.settings.persist = true
@@ -453,6 +453,7 @@ check("and again un-bypasses", params:get("fx_echo_bypass") == 0 and core.units.
 page.enc(3, -5)
 check("E3 sets the dry/wet of an insert", near(params:get("fx_echo_mix"), 0.95) and near(core.units.echo.mix, 0.95))
 page.enc(2, 1)
+check("E2 moves the cursor one row", pcall(page.redraw))
 sent = {}
 page.key(1, 1)
 page.enc(3, 1) -- none -> distortion; the choices are sorted by label
@@ -480,10 +481,69 @@ osc.event("/something/else", {})
 check("a meter message redraws the page and is not passed to the script", redraws == 1 and #script_osc == 1)
 check("other OSC still reaches the script", script_osc[1] == "/something/else")
 check("the page draws", pcall(page.redraw))
-for _ = 1, 9 do page.enc(2, 1) end
+for _ = 1, 30 do page.enc(2, 1) end
 page.enc(3, 1)
 check("the settings are the last rows", near(core.settings.fade, 0.06))
 page.enc(3, -1)
+
+-- input and send rows, and opening a row with K1 + K3
+page.select("send a")
+page.enc(3, 1)
+check("E3 on a send row sets its level", params:get("fx_send_a_level") > 0 and #messages("/fx/send") > 0)
+params:set("fx_send_a_level", 0)
+page.key(1, 1) page.key(3, 1) page.key(1, 0)
+page.enc(2, 1) -- the second row of the send: tap
+page.enc(3, 1)
+check("K1 + K3 opens a send's routing", params:get("fx_send_a_tap") == 2)
+params:set("fx_send_a_tap", 1)
+exits = 0
+page.key(2, 1)
+check("K2 closes the opened row, not the page", exits == 0)
+page.select("ins 2") -- echo
+page.key(1, 1) page.key(3, 1) page.key(1, 0)
+check("opening does not bypass", params:get("fx_echo_bypass") == 0)
+page.key(3, 1) -- the first row is bypass
+check("an opened effect starts with its bypass, toggled with K3", params:get("fx_echo_bypass") == 1)
+page.key(3, 1)
+page.enc(2, 1) page.enc(2, 1) -- past dry/wet to time
+local time_before = params:get("fx_echo_time")
+page.enc(3, 5)
+check("and lists its params for E3", params:get("fx_echo_time") > time_before and pcall(page.redraw))
+params:set("fx_echo_time", time_before)
+page.key(2, 1)
+page.select("a 1")
+page.key(1, 1) page.key(3, 1) page.key(1, 0)
+page.key(2, 1)
+check("opening an empty slot does nothing", exits == 1)
+
+-- racks are saved and loaded from the page
+page.select("save rack...")
+typed = "from page"
+page.key(3, 1)
+check("a rack is saved with every fx param", (function()
+  local f = io.open(presets.scene_path("from page") or "", "r")
+  local text = f and f:read("*a") or ""
+  if f then f:close() end
+  return text:find('"fx_echo_time"', 1, true) and text:find('"fx_pos_echo"', 1, true)
+    and text:find('"fx_send_a_level"', 1, true) and text:find('"fx_bypass_fx_distortion"', 1, true)
+end)())
+check("and the fx presets group lists it", params:string("fx_scene_name") == "from page")
+params:set("fx_echo_time", 1.25)
+core.set_row("insert", 1, nil)
+page.select("rack")
+page.key(3, 1)
+check("K3 on the rack row loads the rack shown",
+  core.rack.insert[1] == "fx_distortion" and near(params:get("fx_echo_time"), time_before))
+for _ = 1, 10 do page.enc(3, -1) end -- the first rack in the list: default
+core.set_row("insert", 1, nil)
+check("E3 picks a rack without loading it", core.rack.insert[1] == nil)
+page.key(3, 1)
+check("and K3 loads that one: the default rack has only echo",
+  core.rack.insert[1] == "echo" and core.locate("fx_distortion") == nil)
+page.enc(3, 1) -- the next: from page
+page.key(3, 1)
+check("the saved rack comes back", core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == "echo")
+page.select("ins 1")
 sent = {}
 page.deinit()
 check("closing the page stops the meters and gives osc.event back",
@@ -494,8 +554,7 @@ osc.event = nil
 stop_script()
 sent = {}
 page.init()
-for _ = 1, 9 do page.enc(2, -1) end
-page.enc(2, 1) -- ins 2: echo
+page.select("ins 2") -- echo
 page.enc(3, -10)
 page.key(3, 1)
 check("without a script dry/wet and bypass go straight to SC",
@@ -506,6 +565,19 @@ page.key(1, 1)
 for _ = 1, 20 do page.enc(3, 1) end -- the last choice: res
 page.key(1, 0)
 check("and effects can be loaded", core.rack.insert[3] == "fx_res" and has("/fx/slot", "insert 3 fx_res"))
+sent = {}
+page.select("send a")
+page.enc(3, 1)
+page.key(1, 1) page.key(3, 1) page.key(1, 0)
+page.select("ins 2")
+page.key(1, 1) page.key(3, 1) page.key(1, 0)
+page.select("rack")
+page.key(3, 1)
+page.select("save rack...")
+typed = "no script"
+page.key(3, 1)
+check("rows that are params do nothing without a script",
+  #sent == 0 and presets.scene_path("no script") == nil and pcall(page.redraw))
 page.deinit()
 start_script(script_init) -- reads PSET 1; the live rack wins
 check("the next script's params take up what the page did",
@@ -519,7 +591,7 @@ stop_script()
 core.clear_rack()
 core.live = {}
 page.init()
-for _ = 1, 9 do page.enc(2, -1) end
+page.select("ins 1")
 page.key(1, 1)
 page.enc(3, 2) -- one step per detent: distortion
 page.key(1, 0)

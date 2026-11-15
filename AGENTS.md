@@ -32,10 +32,10 @@ Done and tested (Lua test, click test, and on the shield):
    (`fx_send_a_to_b`, `fx_send_b_to_a`), feedback routing through the send
    inlets (`FxSend`, `\fxInlet`). On the shield: node tree, SC state, CPU
    (about 17% under awake with two v1 effects) and xruns were checked, and
-   the user confirmed the feedback routing by ear (2026-11-15).
+   the user confirmed the feedback routing and the audio input by ear
+   (2026-11-15).
 
-Not verified: the audio input (`fx_input_*`) with a real source on the
-device; the "save as..." name
+Not verified: the "save as..." name
 entry and the mod settings page on screen; start-up restore from a script's
 own PSET on the device (covered in the Lua test only).
 

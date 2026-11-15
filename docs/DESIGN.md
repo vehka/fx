@@ -188,27 +188,54 @@ PSET or the default scene decides, as before.
 
 ## Rack page
 
-The mod's menu page (SYSTEM > MODS > fx, `lib/page.lua`) lists the eight
-slots in signal order, then the two settings. It reads the model and changes
-it only through the core (`set_row`, `swap`, `set_mix`, `set_bypass`), which
-go through the params when a script is running and straight to the model and
-SC when none is. So the params menu, PSETs and the page agree, and the page
-works with no script loaded.
+The mod's menu page (SYSTEM > MODS > fx, `lib/page.lua`) is a second view of
+the state the params menu shows, laid out as the rack instead of as groups.
+The params stay the store: PSETs, MIDI mapping and saved racks are made of
+them. The page reads the model and changes it only through the core
+(`set_row`, `swap`, `set_mix`, `set_bypass`) and the params, so the two views
+agree.
+
+Rows, in signal order: `input`, the four inserts, then `send a` with its two
+slots and `send b` with its two, then `rack`, `save rack...` and the two
+settings.
 
 | Control | Action |
 |---|---|
 | E2 | select a row |
-| E3 | dry/wet of an insert; value of a setting |
-| K3 | bypass |
+| E3 | the row's value: dry/wet of an insert, input or send level, a setting, which rack |
+| K3 | bypass an effect; load the rack shown; save a rack |
 | K1 + E2 | move the effect within its chain (swaps with the neighbour) |
 | K1 + E3 | scroll through the effects; releasing K1 loads the one shown |
+| K1 + K3 | open the row |
 | K2 | back |
 
-Loading is scroll-then-confirm here as well: nothing is loaded while K1 is
-held. The menu delivers a long K1 press to a page only after a delay, so the
-page also reads `_menu.alt`, the menu's own "K1 is down" state. That is an
-internal; without it the page still works but the first encoder steps after
-pressing K1 would be taken as unmodified.
+An opened row is a list of params in place of the rack list, with the meters
+still shown: for an effect its bypass and everything in `unit.param_ids`
+(dry/wet and its own params), for a send its tap, return, destination and
+send-to-send level, for the input its mode. Hidden params are left out, so a
+send effect has no dry/wet. E2 selects, E3 changes, K3 toggles a switch, K2
+or K1 + K3 goes back. Params a v1 plugin adds without the helper API are not
+in `param_ids` and so not listed.
+
+What works without a script: the rack, order, dry/wet and bypass, which are
+in the model. Everything else on the page is a param and exists only while a
+script runs; those rows are dim and answer "needs a running script". Making
+the fx params exist with no script loaded would remove the limit but is not
+done: core clears the paramset after the last hook of a script change, and
+v1 plugins add their params from script hooks.
+
+The `rack` rows use the scenes of `lib/presets.lua`: E3 picks one (marked
+`?` until loaded), K3 loads it, `save rack...` asks for a name with the last
+rack's name filled in. A scene holds every fx param, so a saved rack is
+complete: slots, order, sends, input and each effect's values.
+
+Loading an effect is scroll-then-confirm here as well: nothing is loaded
+while K1 is held. The menu delivers a long K1 press to a page only after a
+delay, so the page also reads `_menu.alt`, the menu's own "K1 is down" state.
+That is an internal; without it the page still works but the first steps
+after pressing K1 would be taken as unmodified. A K1 press shorter than the
+menu's hold time (0.25 s) leaves the menu, as on every menu page, so K1 has
+to be held a moment before K3.
 
 ### Meters and CPU
 

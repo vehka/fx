@@ -46,11 +46,10 @@ Done and tested (Lua test, click test, and on the shield):
 7. Rack page, second pass (asked for by the user after trying the first):
    K1 + K3 opens a row (an effect's params, a send's or the input's
    routing), rows for the input and each send level, and rows to load and
-   save racks (scenes). Lua test only: it was copied to the shield and the
-   shield restarted, but NOT checked there, by screenshot or by hand.
-   `docs/DESIGN.md` and `README.md` still describe the first pass; update
-   their rack page sections (controls table, row list, "needs a running
-   script" for param rows) before anything else.
+   save racks (scenes). Lua test only. It was copied to the shield
+   (2026-11-15) and the shield came back up without fx errors, but the new
+   rows, the opened-row view and the rack name entry were NOT checked there,
+   by screenshot or by hand: the user took the shield offline first.
 
 Not verified: the rack page with the physical keys and encoders, above all
 the K1-hold gestures and how the meters look in motion (the user has not
@@ -62,8 +61,10 @@ user's older WIP ("WIP engine-driven sends"); leave it alone.
 
 ## Next
 
-Ask the user how the rack page feels in the hand first; then, in the order
-agreed with the user:
+First check the second pass of the rack page on the shield (see 7 above;
+`test/run.lua` uses `page.select(label)`, on the device it is
+`_menu.m["fx"].select("send a")` and so on) and ask the user how it feels in
+the hand. Then, in the order agreed with the user:
 
 - **Step 6:** softcut as a source (needs more SC input channels and JACK
   routes via `audio.port_connect` and the
@@ -77,8 +78,10 @@ Smaller open items:
 
 - Scenes saved before step 4 do not mention the input and send-to-send
   params, so loading one leaves those as they are.
-- Rack page ideas not done: a send's level and return on the page, moving
-  an effect between chains with K1 + E2, clipping hold on the meters.
+- Rack page ideas not done: moving an effect between chains with K1 + E2,
+  clipping hold on the meters, per-effect presets on the page, K1 + K2 (free).
+- The page's param rows need a running script. Making fx params exist with
+  no script is the fix if the user wants it; see "Rack page" in the design.
 - If matron restarts on its own while the page is open, SC keeps sending
   meter messages until the page is opened and closed again.
 - Params a v1 plugin sets up without the helper API (e.g. `fx_resonator`'s

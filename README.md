@@ -41,24 +41,41 @@ plugins in **fx rack** as "<effect> bypass".
 
 ### The rack page
 
-SYSTEM > MODS > fx shows the whole rack: the four inserts and the two slots
-of each send, with each insert's dry/wet (or `byp` when bypassed), meters for
-the rack input (i), the two sends (a, b) and the rack output (o), and the
-average / peak CPU of SuperCollider. It works with or without a script.
+SYSTEM > MODS > fx shows the whole rack in signal order: the input, the four
+inserts, and each send with its two slots. Inserts show their dry/wet (or
+`byp` when bypassed), the input and the sends their level. On the right are
+meters for the rack input (i), the two sends (a, b) and the rack output (o);
+at the top the average / peak CPU of SuperCollider.
 
 | | |
 |---|---|
-| E2 | select a slot |
-| E3 | dry/wet (inserts) |
+| E2 | select a row |
+| E3 | dry/wet of an insert, or the level of the input or a send |
 | K3 | bypass on/off |
 | K1 + E2 | move the effect up or down in its chain |
 | K1 + E3 | scroll through the effects, release K1 to load the one shown (`-` empties the slot) |
+| K1 + K3 | open the row: an effect's params, or the routing of a send or the input |
 | K2 | back |
 
-Below the slots are two settings, changed with E3: **keep rack** (the rack
-keeps running across script changes; a rack you set up here is then kept
-when a script starts) and **fade**, the fade time for loading and bypass.
-With keep rack off, each script starts from its own PSET or the default rack.
+In an opened row E2 selects a param, E3 changes it, K3 toggles a switch and
+K2 goes back to the rack. Hold K1 for a moment before pressing K3: a quick
+tap of K1 leaves the menu, as everywhere on norns.
+
+Below the rack:
+
+- **rack** and **save rack...**: E3 picks a saved rack and K3 loads it; save
+  asks for a name. A saved rack holds everything: which effects are where,
+  the sends and input, and every effect's own settings. These are the same
+  racks as the scenes in **fx presets**.
+- **keep rack**: the rack keeps running across script changes, and a rack you
+  set up here is kept when a script starts. When off, each script starts from
+  its own PSET or the default rack.
+- **fade**: the fade time for loading and bypass.
+
+The page and the params menu show the same things; change them in either.
+With no script loaded you can still place, move and bypass effects and set
+dry/wet, but effect params, sends, input and saved racks need a running
+script.
 
 ## Writing an effect
 

@@ -21,6 +21,7 @@ Core.chain_slot = { a = 2, b = 3, insert = 4 }
 Core.units = {}      -- name -> unit
 Core.names = {}      -- registration order, sorted when params are built
 Core.rack = {}       -- chain id -> index -> unit name
+Core.pending = {}    -- chain id -> index -> unit asked for on a rack row but loaded elsewhere
 Core.live = {}       -- param id -> last value, survives script changes
 Core.ids = {}        -- fx param ids of the running script, in menu order
 Core.is_fx_id = {}
@@ -32,6 +33,7 @@ local chain_by_id = {}
 for _, c in ipairs(Core.chains) do
   chain_by_id[c.id] = c
   Core.rack[c.id] = {}
+  Core.pending[c.id] = {}
 end
 
 local function send(path, args)
@@ -122,9 +124,27 @@ local function commit(before)
   Core.sync_params()
 end
 
+-- a rack row waiting for a unit loads it once the unit is free
+local function activate_pending()
+  for _, c in ipairs(Core.chains) do
+    for i = 1, c.size do
+      local name = Core.pending[c.id][i]
+      if name then
+        if Core.rack[c.id][i] ~= nil then
+          Core.pending[c.id][i] = nil
+        elseif Core.locate(name) == nil then
+          Core.rack[c.id][i] = name
+          Core.pending[c.id][i] = nil
+        end
+      end
+    end
+  end
+end
+
 --- Put a unit at chain/index, or take it out of the rack with chain = nil.
--- An occupant moves to the first free slot of the chain, or out if it is full.
-function Core.place(name, chain_id, index)
+-- An occupant moves to the first free slot of the chain, or out if it is
+-- full; with `replace` it always leaves the rack.
+function Core.place(name, chain_id, index, replace)
   local before = snapshot()
   local old_chain, old_index = Core.locate(name)
   if old_chain == chain_id and old_index == index then return end
@@ -132,12 +152,37 @@ function Core.place(name, chain_id, index)
   if chain_id then
     local occupant = Core.rack[chain_id][index]
     Core.rack[chain_id][index] = name
-    if occupant then
+    Core.pending[chain_id][index] = nil
+    if occupant and not replace then
       local free = first_free(chain_id)
-      if free then Core.rack[chain_id][free] = occupant end
+      if free then
+        Core.rack[chain_id][free] = occupant
+        Core.pending[chain_id][free] = nil
+      end
     end
   end
+  activate_pending()
   commit(before)
+end
+
+--- A rack row was set by hand. The row only changes itself: its occupant
+-- leaves the rack, and a unit that is loaded elsewhere is not taken from
+-- there; the row waits for it instead and shows it in parentheses.
+function Core.set_row(chain_id, index, name)
+  local occupant = Core.rack[chain_id][index]
+  if name == nil then
+    Core.pending[chain_id][index] = nil
+    if occupant then Core.place(occupant, nil) else Core.sync_params() end
+    return
+  end
+  local at_chain, at_index = Core.locate(name)
+  if at_chain == chain_id and at_index == index then return end
+  if at_chain then
+    Core.pending[chain_id][index] = name
+    if occupant then Core.place(occupant, nil) else Core.sync_params() end
+  else
+    Core.place(name, chain_id, index, true)
+  end
 end
 
 --- Put a unit somewhere in a chain: its remembered position, else the first
@@ -162,7 +207,10 @@ function Core.place_in_chain(name, chain_id)
 end
 
 function Core.clear_rack()
-  for _, c in ipairs(Core.chains) do Core.rack[c.id] = {} end
+  for _, c in ipairs(Core.chains) do
+    Core.rack[c.id] = {}
+    Core.pending[c.id] = {}
+  end
   send("/fx/clear")
 end
 
@@ -216,7 +264,7 @@ function Core.sync_params()
   local rebuild = false
   for _, c in ipairs(Core.chains) do
     for i = 1, c.size do
-      local name = Core.rack[c.id][i]
+      local name = Core.rack[c.id][i] or Core.pending[c.id][i]
       quiet_set(c.prefix .. i, name and option_index(Core.view_names, name) or 1)
     end
   end
@@ -314,13 +362,18 @@ local function add_rack_params()
       params:lookup_param(id).save = false
       params:set_action(id, function(value)
         local name = Core.view_names[value]
-        if name == nil or name == "none" then
-          local occupant = Core.rack[c.id][i]
-          if occupant then Core.place(occupant, nil) end
-        else
-          Core.place(name, c.id, i)
-        end
+        if name == "none" then name = nil end
+        Core.set_row(c.id, i, name)
       end)
+      -- a unit that is loaded on another row is shown in parentheses
+      local p = params:lookup_param(id)
+      p.string = function(self)
+        local text = self.options[self.selected]
+        if Core.rack[c.id][i] == nil and Core.pending[c.id][i] ~= nil then
+          return "(" .. text .. ")"
+        end
+        return text
+      end
     end
   end
 

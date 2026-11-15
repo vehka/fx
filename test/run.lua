@@ -183,18 +183,47 @@ check("rack view follows", params:string("fx_ins_1") == "distortion")
 check("position is recorded", params:get("fx_pos_fx_distortion") == 1)
 check("dry/wet shown for an insert", params:visible("fx_distortion_slot_drywet"))
 
+-- rack rows: a row only changes itself
+-- view options are none, then the units sorted by name
+local view = {}
+for i, name in ipairs(core.view_names) do view[name] = i end
 sent = {}
-params:set("fx_ins_1", 3) -- options: none, echo, distortion -> sorted names: echo, fx_distortion
-check("view option order is none, echo, distortion", params:string("fx_ins_1") == "distortion")
-params:set("fx_ins_1", 2)
-check("placing echo on insert 1 moves distortion to insert 2",
-  has("/fx/slot", "insert 1 echo") and has("/fx/slot", "insert 2 fx_distortion"))
-check("unit slot param follows the view", params:get("fx_echo_slot") == 4)
-check("positions follow", params:get("fx_pos_echo") == 1 and params:get("fx_pos_fx_distortion") == 2)
-
+params:set("fx_ins_2", view.fx_distortion)
+check("a unit loaded on another row is shown in parentheses and not moved",
+  params:string("fx_ins_2") == "(distortion)" and core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == nil
+  and #messages("/fx/slot") == 0)
+params:set("fx_ins_2", view.echo)
+check("scrolling on puts the next unit on that row only",
+  core.rack.insert[1] == "fx_distortion" and core.rack.insert[2] == "echo" and params:string("fx_ins_2") == "echo")
+sent = {}
+params:set("fx_ins_2", view.fx_res)
+check("the previous occupant leaves the rack, it does not move to another row",
+  core.locate("echo") == nil and core.rack.insert[2] == "fx_res" and core.rack.insert[3] == nil
+  and params:get("fx_echo_slot") == 1)
+params:set("fx_ins_2", 1)
+check("none empties the row", core.rack.insert[2] == nil and core.locate("fx_res") == nil)
+check("and the rest of the rack is untouched", core.rack.insert[1] == "fx_distortion" and core.rack.insert[3] == nil)
+params:set("fx_ins_3", view.fx_distortion)
 sent = {}
 params:set("fx_ins_1", 1)
-check("view = none removes the unit", has("/fx/slot", "insert 1 none") and params:get("fx_echo_slot") == 1)
+check("a waiting row loads the unit when its other row lets go",
+  core.rack.insert[1] == nil and core.rack.insert[3] == "fx_distortion" and params:string("fx_ins_3") == "distortion"
+  and has("/fx/slot", "insert 3 fx_distortion"))
+params:set("fx_ins_3", 1)
+check("every insert can go back to none", core.rack.insert[1] == nil and core.rack.insert[2] == nil
+  and core.rack.insert[3] == nil and core.rack.insert[4] == nil)
+check("unit slot params follow the rows", params:get("fx_distortion_slot") == 1 and params:get("fx_res_slot") == 1)
+
+-- unit slot params: these do move things, PSET restore depends on it
+params:set("fx_echo_slot", 4)
+params:set("fx_distortion_slot", 4)
+check("slot = insert uses remembered positions", core.rack.insert[2] == "echo" and core.rack.insert[3] == "fx_distortion")
+params:set("fx_pos_echo", 1)
+params:set("fx_pos_fx_distortion", 2)
+check("positions reorder", core.rack.insert[1] == "echo" and core.rack.insert[2] == "fx_distortion")
+check("unit slot param follows the view", params:get("fx_echo_slot") == 4)
+
+sent = {}
 params:set("fx_echo_slot", 2)
 check("slot = send a places in send a", has("/fx/slot", "a 1 echo"))
 params:set("fx_echo_slot", 4)

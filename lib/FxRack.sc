@@ -198,6 +198,9 @@ FxRack {
 	classvar <inputSynth, <inputLevel = 0, <inputMono = 0;
 	// softcut, when it is patched to the server's third and fourth input
 	classvar <>cutBuses, <softcutSynth, <softcutLevel = 0;
+	// what softcut records of the engine while it is in the rack: a tap taken
+	// before softcut joins, on the server's outputs 3 and 4
+	classvar <>feedBus, <feedSynth, <feedLevel = 0;
 	// shared buses any unit may read: the sidechain (key) signal, and one
 	// control bus of [key envelope, tempo, mod 1..4]
 	classvar <keyBus, <ctlBus, <keySynth, <keySettings, <bpm = 120, <mods;
@@ -220,6 +223,8 @@ FxRack {
 		// StartUp function, which runs after every initClass.
 		Class.initClassTree(Server);
 		Server.local.options.numInputBusChannels = max(Server.local.options.numInputBusChannels, 4);
+		// and two more outputs, for what softcut records: see feedBus
+		Server.local.options.numOutputBusChannels = max(Server.local.options.numOutputBusChannels, 4);
 		StartUp.add {
 			if(\Crone.asClass.notNil) {
 				unitsFile = unitsFile ?? { Platform.userHomeDir +/+ "dust/data/fx/units.lua" };
@@ -269,6 +274,7 @@ FxRack {
 		group = nil;
 		inputSynth = nil;
 		softcutSynth = nil;
+		feedSynth = nil;
 		keySynth = nil;
 		meterIn = nil;
 		meterOut = nil;
@@ -332,6 +338,17 @@ FxRack {
 					\in_l, cutBuses[0], \in_r, cutBuses[1], \out, mainBus,
 					\level, softcutLevel, \mono, 0
 				], inputSynth, \addAfter);
+			};
+			// The engine alone, for softcut to record: at the very head, where
+			// nothing of the rack and no softcut is on the main bus yet. With
+			// softcut in the rack the engine-to-softcut path inside crone would
+			// carry softcut back into itself, so the Lua side closes it and
+			// sets this level to what was asked of crone.
+			feedBus = feedBus ?? { if(server.options.numOutputBusChannels >= 4) { 2 } };
+			if(feedBus.notNil) {
+				feedSynth = Synth.new(\fxTap, [
+					\in, mainBus, \out, feedBus, \level, feedLevel
+				], group, \addToHead);
 			};
 			preTaps = Group.new(group, \addToTail);
 			preSends = Group.new(group, \addToTail);
@@ -469,6 +486,11 @@ FxRack {
 		softcutSynth !? { softcutSynth.set(\level, value) };
 	}
 
+	*setFeed { |value|
+		feedLevel = value;
+		feedSynth !? { feedSynth.set(\level, value) };
+	}
+
 	// key: \src, \gain, \attack or \release
 	*setKey { |key, value|
 		keySettings[key] = value;
@@ -559,6 +581,7 @@ FxRack {
 		}, '/fx/xsend');
 		OSCFunc({ |msg| this.setInput(msg[1].asSymbol, msg[2].asFloat) }, '/fx/input');
 		OSCFunc({ |msg| this.setSoftcut(msg[1].asFloat) }, '/fx/softcut');
+		OSCFunc({ |msg| this.setFeed(msg[1].asFloat) }, '/fx/cutfeed');
 		OSCFunc({ |msg| this.setKey(msg[1].asSymbol, msg[2].asFloat) }, '/fx/key');
 		OSCFunc({ |msg| this.setTempo(msg[1].asFloat) }, '/fx/tempo');
 		OSCFunc({ |msg| this.setMod(msg[1], msg[2].asFloat) }, '/fx/mod');

@@ -4,7 +4,7 @@
 //   test/run_sc.sh
 (
 var threshold = 0.1;
-var seconds = 27;
+var seconds = 28;
 var failures = List.new;
 var check = { |label, cond| if(cond.not) { failures.add(label) }; ("  " ++ if(cond) { "ok   " } { "FAIL " } ++ label).postln };
 var maxStep = { |data, from, to|
@@ -51,7 +51,7 @@ fork { try {
 	var s = Server.default, buf, src, inSrc, rec, data, t0, at, mark = 0, marks = ();
 	var step = { |name, dur, f| marks[name] = mark; f.value; dur.wait; mark = mark + dur };
 	var meterDry, meterDrive, meterCount = 0, lastMeter;
-	var copies, unitsPath, unitsText;
+	var copies, unitsPath, unitsText, feedPeak, feedSyn, feedMeter;
 	// stands in for matron: keeps the last /fx/meter message
 	FxRack.matron = (sendMsg: { |self ... msg| lastMeter = msg; meterCount = meterCount + 1 });
 	s.bootSync;
@@ -137,6 +137,21 @@ fork { try {
 		FxRack.setSoftcut(1);
 	});
 	step.(\cutOff, 0.4, { FxRack.setSoftcut(0); inSrc.set(\gate, 0) });
+	// what softcut records: the engine at the asked level, without softcut
+	feedMeter = Bus.control(s, 1);
+	step.(\feed, 0.5, {
+		src = Synth(\testSrc, [\out, 0], s.defaultGroup, \addToHead);
+		inSrc = Synth(\testSrc, [\out, FxRack.cutBuses[0]], s.defaultGroup, \addToHead);
+		FxRack.setSoftcut(1);
+		FxRack.setFeed(0.5);
+		FxRack.place(\insert, 1, \drive);
+		feedSyn = { Out.kr(feedMeter, A2K.kr(Amplitude.ar(In.ar(FxRack.feedBus), 0.005, 0.3))) }.play(s.defaultGroup, addAction: \addToTail);
+	});
+	feedMeter.get { |v| feedPeak = v };
+	step.(\feedOff, 0.4, {
+		FxRack.setSoftcut(0); FxRack.setFeed(0); FxRack.clear;
+		feedSyn.free; src.set(\gate, 0); inSrc.set(\gate, 0);
+	});
 	// sidechain: the audio inputs, not heard themselves, duck the engine
 	step.(\keyDry, 0.5, {
 		src = Synth(\testSrc, [\out, 0], s.defaultGroup, \addToHead);
@@ -205,7 +220,10 @@ fork { try {
 		rms.(data, marks[\fbEnd] - 0.3, marks[\fbEnd] - 0.05) < 0.0005);
 	check.("softcut reaches the output (rms %)".format(rms.(data, marks[\cut] + 0.2, marks[\cut] + 0.45).round(0.001)),
 		rms.(data, marks[\cut] + 0.2, marks[\cut] + 0.45) > 0.15);
-	check.("and is silent at level 0", rms.(data, marks[\keyDry] - 0.15, marks[\keyDry] - 0.02) < 0.0005);
+	check.("and is silent at level 0", rms.(data, marks[\feed] - 0.15, marks[\feed] - 0.02) < 0.0005);
+	check.("softcut's feed is the engine alone, at its level, before the rack (peak %)".format(feedPeak.round(0.001)),
+		(feedPeak - 0.25).abs < 0.03);
+	check.("and nothing is left once it is off", rms.(data, marks[\keyDry] - 0.15, marks[\keyDry] - 0.02) < 0.0005);
 	check.("an idle sidechain leaves the signal alone (rms %)".format(rms.(data, marks[\keyDry] + 0.2, marks[\keyDry] + 0.45).round(0.001)),
 		rms.(data, marks[\keyDry] + 0.2, marks[\keyDry] + 0.45) > (rms.(data, 0.1, 0.4) * 0.95));
 	check.("the audio input as the key ducks it, unheard (rms %)".format(rms.(data, marks[\keyOn] + 0.2, marks[\keyOn] + 0.45).round(0.001)),

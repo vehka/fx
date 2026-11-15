@@ -20,6 +20,7 @@ norns = {
   state = { data = tmp .. "/data/script/", shortname = "script", pset_last = 1 },
   pmap = { data = {} },
 }
+norns.state.mix = { cut_input_eng = -6 }
 _norns = {
   execute = function(cmd)
     local p = io.popen(cmd .. " 2>/dev/null")
@@ -44,9 +45,12 @@ osc = { send = function(to, path, args) table.insert(sent, { path = path, args =
 
 -- the routing functions of norns 3.x; routes records what was asked for
 local routes = {}
+local crone_eng_cut = {} -- the levels that reached crone
 audio = {
   ports = { "SuperCollider:in_1", "SuperCollider:in_2", "SuperCollider:in_3", "SuperCollider:in_4" },
   input_ports = function() return audio.ports end,
+  output_ports = function() return { "SuperCollider:out_1", "SuperCollider:out_2", "SuperCollider:out_3", "SuperCollider:out_4" } end,
+  level_eng_cut = function(value) table.insert(crone_eng_cut, value) end,
   port_connect = function(from, to) table.insert(routes, "+ " .. from .. " " .. to) return true end,
   port_disconnect = function(from, to) table.insert(routes, "- " .. from .. " " .. to) return true end,
 }
@@ -632,20 +636,32 @@ check("persist off resets dry/wet and bypass at cleanup",
 start_script(script_init)
 check("there is a softcut param when core has the routing functions",
   params.lookup["fx_softcut"] ~= nil and params:get("fx_softcut") == 1 and #routes == 0)
+audio.level_eng_cut(0.8)
+check("with softcut out of the rack the engine-to-softcut level goes to crone as ever",
+  crone_eng_cut[#crone_eng_cut] == 0.8 and #messages("/fx/cutfeed") == 0)
 params:set("fx_softcut", 2)
 check("through rack: softcut is patched to SuperCollider instead of crone",
   table.concat(routes, "|") == "- softcut:output_1 crone:input_3|+ softcut:output_1 SuperCollider:in_3"
     .. "|- softcut:output_2 crone:input_4|+ softcut:output_2 SuperCollider:in_4"
+    .. "|+ SuperCollider:out_3 softcut:input_1|+ SuperCollider:out_4 softcut:input_2"
   and has("/fx/softcut", "1"))
+check("crone's engine-to-softcut path is closed and the dry feed takes its level",
+  crone_eng_cut[#crone_eng_cut] == 0 and has("/fx/cutfeed", "0.8"))
+local crone_calls = #crone_eng_cut
+audio.level_eng_cut(0.3)
+check("a level set meanwhile goes to the feed, not to crone",
+  #crone_eng_cut == crone_calls and has("/fx/cutfeed", "0.3"))
 routes = {}
 run_hook("audio_post_restore_default_routing")
 check("and patched again after core restored the default routes",
-  #routes == 4 and routes[2] == "+ softcut:output_1 SuperCollider:in_3")
+  #routes == 6 and routes[2] == "+ softcut:output_1 SuperCollider:in_3" and routes[5] == "+ SuperCollider:out_3 softcut:input_1")
 routes = {}
 stop_script()
 check("persist off puts softcut back at cleanup",
   routes[1] == "- softcut:output_1 SuperCollider:in_3" and routes[2] == "+ softcut:output_1 crone:input_3"
+  and routes[5] == "- SuperCollider:out_3 softcut:input_1"
   and core.softcut == false and has("/fx/softcut", "0"))
+check("and hands the last level back to crone", crone_eng_cut[#crone_eng_cut] == 0.3 and has("/fx/cutfeed", "0"))
 routes = {}
 run_hook("audio_post_restore_default_routing")
 check("and the hook then leaves the defaults alone", #routes == 0)
@@ -653,7 +669,8 @@ check("and the hook then leaves the defaults alone", #routes == 0)
 audio.ports = { "SuperCollider:in_1", "SuperCollider:in_2" }
 start_script(script_init)
 params:set("fx_softcut", 2)
-check("nothing is repatched when SuperCollider has no inputs for it", #routes == 0 and core.softcut == false)
+check("nothing is repatched when SuperCollider has no inputs for it",
+  #routes == 0 and core.softcut == false and crone_eng_cut[#crone_eng_cut] == 0.3)
 stop_script()
 audio.ports[3], audio.ports[4] = "SuperCollider:in_3", "SuperCollider:in_4"
 
@@ -665,7 +682,9 @@ check("without audio.port_connect there is no softcut param and the rest is ther
   params.lookup["fx_softcut"] == nil and params.lookup["fx_input_level"] ~= nil
   and #params:lookup_param("fx_key_source").options == 5)
 core.set_softcut(true)
-check("and softcut routing is skipped", #routes == 0 and core.softcut == false and not has("/fx/softcut", "1"))
+audio.level_eng_cut(0.5)
+check("and softcut routing is skipped", #routes == 0 and core.softcut == false and not has("/fx/softcut", "1")
+  and crone_eng_cut[#crone_eng_cut] == 0.5)
 stop_script()
 audio.port_connect = port_connect
 

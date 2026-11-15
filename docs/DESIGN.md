@@ -43,6 +43,7 @@ Node tree, inside one group placed directly after `context.og`:
 fx group
   input       audio inputs (context.in_b) into the main bus, level 0 by default
   softcut     the server's inputs 3 and 4 into the main bus
+              (ahead of both: the engine alone to outputs 3 and 4, for softcut)
   key         the sidechain source onto the key bus, its envelope onto a control bus
   preTaps     tap synths of sends with tap = pre
   preSends    send groups whose return is pre-insert
@@ -305,8 +306,41 @@ the fx input group.
   and `set_softcut` returns at once. The SC side is the same on every
   version; its softcut synth just reads two silent inputs. If the
   `SuperCollider:in_3` port is missing the routes are left alone.
-- Softcut's own engine input (`audio.level_eng_cut`) now contains softcut,
-  through the rack. The mod does not touch that level.
+
+### What softcut records
+
+Crone feeds SuperCollider's output to softcut's input at the
+engine-to-softcut level (`audio.level_eng_cut`; the LEVELS param
+`cut_input_eng`, 0 dB by default, and many scripts set it to 1). With softcut
+in the rack that output contains softcut, so softcut would record itself: in
+awake the delay's feedback would exceed 1. Once softcut is on the main bus
+it cannot be taken out again, and crone has no softcut-free input other than
+the softcut return, so the path is replaced:
+
+- While softcut is in the rack, crone's engine-to-softcut level is held at 0.
+- An `fxTap` at the head of the rack group, before the audio inputs and
+  softcut join, copies the main bus (the engine alone) to the server's
+  outputs 3 and 4 at the level that was asked of crone. Those are connected
+  to `softcut:input_1/2`, next to crone's feed, which still carries the adc
+  and tape.
+
+So softcut records the engine at the level the script or the user wants,
+dry: effects are applied once, when softcut plays through the rack.
+
+Core has no getter for the level. `Core.wrap_eng_cut` replaces
+`audio.level_eng_cut` with a function that remembers the value and passes it
+to crone or, while softcut is in the rack, to the feed (`/fx/cutfeed`). Every
+caller goes through that function: scripts, and the LEVELS param's action.
+This is a run-time override of a core function, beyond the param and mod
+contracts; the user agreed to it for this purpose (2026-11-15). It is only
+installed where softcut routing is available. Until something sets the
+level, the saved `norns.state.mix.cut_input_eng` is taken. Switching back to
+"to output" hands the remembered level to crone.
+
+"Through rack" is refused unless the wrap is in place and both
+`SuperCollider:in_3` and `SuperCollider:out_3` exist: without the feed the
+loop would be open. `FxRack.initClass` raises `numOutputBusChannels` to 4 as
+well, which moves the hardware input buses from 2, 3 to 4, 5.
 
 ## Sidechain, modulation and tempo
 

@@ -32,6 +32,7 @@ end)
 -- may be patched through the rack. Older versions have neither the routing
 -- functions nor this hook, and softcut stays out of the rack there.
 if core.softcut_available() then
+  core.wrap_eng_cut()
   pcall(mods.hook.register, "audio_post_restore_default_routing", hook_name, function()
     core.restore_routing()
   end)

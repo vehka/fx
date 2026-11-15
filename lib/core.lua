@@ -528,13 +528,24 @@ local CUT_ROUTES = {
   { "softcut:output_2", "crone:input_4", "SuperCollider:in_4" },
 }
 
+-- With softcut in the rack, SuperCollider's output contains softcut, and
+-- crone feeds that output to softcut's input at the engine-to-softcut level
+-- (audio.level_eng_cut, "input engine" under LEVELS): softcut would record
+-- itself. So while softcut is in the rack that level is held at 0 in crone
+-- and applied instead to a tap of the engine alone, which FxRack puts on the
+-- server's outputs 3 and 4 and these routes bring to softcut's input.
+local FEED_ROUTES = {
+  { "SuperCollider:out_3", "softcut:input_1" },
+  { "SuperCollider:out_4", "softcut:input_2" },
+}
+
 function Core.softcut_available()
   return audio ~= nil and audio.port_connect ~= nil and audio.port_disconnect ~= nil
 end
 
-local function has_port(name)
-  if not audio.input_ports then return true end
-  for _, port in ipairs(audio.input_ports() or {}) do
+local function has_port(list, name)
+  if not list then return true end
+  for _, port in ipairs(list() or {}) do
     if port == name then return true end
   end
   return false
@@ -550,18 +561,57 @@ local function route_softcut(on)
       audio.port_connect(r[1], r[2])
     end
   end
+  for _, r in ipairs(FEED_ROUTES) do
+    if on then audio.port_connect(r[1], r[2]) else audio.port_disconnect(r[1], r[2]) end
+  end
+end
+
+-- the engine-to-softcut level last asked for, by a script or the LEVELS menu
+local function eng_cut_level()
+  if Core.eng_cut then return Core.eng_cut end
+  local db = norns and norns.state and norns.state.mix and norns.state.mix.cut_input_eng
+  return util.dbamp(db or 0)
+end
+
+--- Put the mod between callers of audio.level_eng_cut and crone. Core has no
+-- way to read that level back, and every caller, the LEVELS param included,
+-- goes through this function. With softcut out of the rack the call passes
+-- straight through.
+function Core.wrap_eng_cut()
+  if Core.eng_cut_original or not Core.softcut_available() or not audio.level_eng_cut then return end
+  Core.eng_cut_original = audio.level_eng_cut
+  audio.level_eng_cut = function(value)
+    Core.eng_cut = value
+    if Core.softcut then
+      send("/fx/cutfeed", { value })
+    else
+      Core.eng_cut_original(value)
+    end
+  end
 end
 
 function Core.set_softcut(on)
   if not Core.softcut_available() then return end
   on = on and true or false
-  if on and not has_port(CUT_ROUTES[1][3]) then
-    print("fx: SuperCollider has no inputs for softcut; restart norns with fx enabled")
+  -- without the feed softcut would record itself, so it is all or nothing
+  if on and not (Core.eng_cut_original and has_port(audio.input_ports, CUT_ROUTES[1][3])
+      and has_port(audio.output_ports, FEED_ROUTES[1][1])) then
+    print("fx: SuperCollider has no ports for softcut; restart norns with fx enabled")
     on = false
   end
   if on ~= Core.softcut then
+    local level = eng_cut_level()
     Core.softcut = on
-    route_softcut(on)
+    if on then
+      -- close the path through crone before softcut arrives in the rack
+      Core.eng_cut_original(0)
+      send("/fx/cutfeed", { level })
+      route_softcut(true)
+    else
+      route_softcut(false)
+      send("/fx/cutfeed", { 0 })
+      Core.eng_cut_original(level)
+    end
   end
   send("/fx/softcut", { on and 1 or 0 })
 end

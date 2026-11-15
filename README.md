@@ -18,7 +18,8 @@ SuperCollider's output, which is where any script's engine plays.
 ```
  SOURCES                                MAIN BUS
                                            ║
- engine of any script ────────────────────►║
+ engine of any script ──────┬─────────────►║
+                            └─ dry, [LEVELS: input engine] ─► softcut's input (only with softcut through rack)
  audio in ──── [input level, mode] ───────►║
  softcut ───── [softcut: through rack] ───►║
                                            ║
@@ -75,6 +76,7 @@ group, so it runs after every engine:
    group  Crone.context.xg     the script's engine, writing to the main bus [0, 1]
    group  Crone.context.og
    group  FxRack.group
+      fxTap                    the engine alone -> server outputs 3, 4, for softcut to record
       fxInput                  audio inputs (in_b) -> main bus
       fxInput                  softcut (server inputs 3, 4) -> main bus
       fxKey                    the chosen sidechain source -> key bus and envelope
@@ -106,9 +108,10 @@ script then has these at the end of its params menu:
   to mono. The input then passes through the inserts and send taps like the
   engine does. Turn the norns monitor level down to hear only the processed
   signal. **softcut** (norns 3.x) can be set to "through rack": its output
-  then goes into the rack instead of straight to the norns mixer. If the
-  script also records the engine into softcut (`audio.level_eng_cut`), softcut
-  now hears itself through that path: a loop, wanted or not.
+  then goes into the rack instead of straight to the norns mixer. Softcut
+  still records the engine at the level the script or LEVELS > "input engine"
+  sets, but it records the engine as it is before the rack, so softcut never
+  records itself and effects are heard once, on playback.
 - **fx sends**: per send, the level tapped from the engine output, where it is
   tapped (pre/post insert), the return level, where it returns, and the level
   from its effects into the other send (delay into reverb).

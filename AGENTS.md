@@ -60,16 +60,25 @@ Done and tested (Lua test, click test, and on the shield):
    of the whole rack; keep it in step with routing changes.
 
 On the shield (2026-11-15, update 260616) step 6's start-up was checked over
-the REPL: the server boots with four inputs (`SuperCollider:in_3/4` exist,
-`FxRack.cutBuses` is [4, 5], `in_b` moved to 6 and 7), `units.lua` is
+the REPL: the server boots with four inputs (`SuperCollider:in_3/4` exist), `units.lua` is
 written before the mods' start-up hook (empty there: no native unit is
 installed), the seven v1 plugins register, `fx_softcut` repatches softcut and
 back, the routes are made again after a script change, and a tempo change
 reaches `FxRack.bpm`. No `.sc` file on the device uses a literal bus number
 or the server options, so the extra inputs break nothing there.
 
-Not verified on the device, step 6: softcut actually heard through the rack
-and whether repatching clicks, the sidechain, mod buses and copies (they need
+Softcut's feed was checked there the same day with awake (its delay is
+softcut at feedback 0.75, engine-to-softcut 1), the output muted and levels
+read from control buses in SC: with softcut through the rack and a steady
+0.1 tone as the engine, the feed carried 0.097 and softcut settled at 0.109
+and stayed there; `audio.level_eng_cut(0.5)` and the LEVELS param moved the
+feed, not crone; with crone's path reopened by hand the idle noise floor
+grew twentyfold in 9 s, which is the loop the feed replaces. After the
+second restart the buses are: outputs 0 to 3, `cutBuses` [6, 7], `in_b`
+[8, 9].
+
+Not verified on the device, step 6: softcut through the rack by ear, and
+whether repatching clicks, the sidechain, mod buses and copies (they need
 a native unit), a unit from the units file, `fx.request`, the new page rows.
 
 Not verified: the rack page with the physical keys and encoders, above all
@@ -86,11 +95,7 @@ The plan is implemented; what is left is the device. Check step 6 and the
 second pass of the rack page on the shield (see 7 and 8 above; `test/run.lua`
 uses `page.select(label)`, on the device it is
 `_menu.m["fx"].select("send a")` and so on) and ask the user how it feels in
-the hand. **Open decision, softcut feedback:** with softcut through the rack, crone's
-engine-to-softcut path (`audio.level_eng_cut`, 0 dB by default, set to 1 by
-awake, wrms, bline and others) carries softcut back into softcut. Nothing
-prevents it; see "Softcut" in the design. The user has been asked how to
-resolve it. No effect that uses the sidechain, mod or
+the hand. No effect that uses the sidechain, mod or
 tempo buses exists outside the click test; one is needed to hear them.
 
 Smaller open items:
@@ -207,9 +212,13 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   90 s. Poll the REPL until it answers instead of sleeping a fixed time.
 - **A classvar getter and a class method of the same name do not compile**
   (`classvar <tempo` with `*tempo`), and that is the no-audio failure above.
-- **FxRack raises the server's input channels to 4 for every script.** The
-  first private bus number moves with it; an engine with hard-coded bus
-  numbers would notice.
+- **FxRack raises the server's inputs and outputs to 4 each, for every
+  script.** Hardware inputs are then buses 4 to 7 and private buses start at
+  8; an engine with hard-coded bus numbers would notice. None on the shield
+  or in the script archive (sompaserv, 311 `.sc` files) has any.
+- **`audio.level_eng_cut` is wrapped by the mod** (see "What softcut records"
+  in the design). With softcut in the rack, crone's real level is 0 and must
+  stay 0: never call `Core.eng_cut_original` with anything else then.
 - **`audio.port_connect` marks the routing as altered**, so core resets every
   route at the next script change and calls the restore hook. A route made
   inside that hook does not set the mark again.

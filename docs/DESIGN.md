@@ -52,6 +52,14 @@ fx group
   postSends   send groups whose return is post-insert
 ```
 
+The rack group is made directly after `context.og`, but that is not always
+the end: some engines add an output stage at the tail of the root group
+when they load (Sines sums its voices on a private bus and writes them to
+the main bus from there), and the rack would see none of it. So at
+`script_post_init`, when the engine is up, `/fx/tail` moves the rack group to
+the tail of its parent. A node added to the tail later, while the script
+runs, is still missed.
+
 A send group holds the send's inlet, its chain group, its return synth and
 one synth per other send (send-to-send). A pre-insert return passes through
 the inserts.
@@ -124,7 +132,9 @@ new position, so it crossfades and the effect state restarts.
 `inBus`/`outBus` runs inside a per-instance group: pre synth (chain bus ->
 private in bus), the plugin synth, post synth (private wet bus -> chain bus,
 same mix/tail maths, frees the group). `~sendA`, `~sendB`, `FxSetup.sendA` and
-`FxSetup.sendB` stay for cooperating engines.
+`FxSetup.sendB` stay for cooperating engines. `FxSetup.insertInput` returns
+nil so older engine-driven routing that checks for this separate insert feed
+disables its extra copy: inserts now process the engine's main output in place.
 
 ## Lua model
 
@@ -173,7 +183,7 @@ so no param, does.
 | Hook | Work |
 |---|---|
 | `system_post_startup`, `script_pre_init` | `/fx/ensure` (idempotent); record which PSET the script reads during `init` |
-| `script_post_init` | add params, restore values, bang fx params, rebuild the params menu |
+| `script_post_init` | move the rack behind the engine (`/fx/tail`), add params, restore values, bang fx params, rebuild the params menu |
 | `script_post_cleanup` | if persist is off, `/fx/clear` |
 
 Restoring values at `script_post_init`:

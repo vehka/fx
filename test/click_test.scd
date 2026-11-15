@@ -250,6 +250,23 @@ fork { try {
 	check.("detector sees a hard cut (max step %)".format(maxStep.(data, marks[\hardCut] - 0.05, marks[\stop]).round(0.0001)),
 		maxStep.(data, marks[\hardCut] - 0.05, marks[\stop]) > threshold);
 
+	// an engine whose output stage sits at the tail of the root group
+	src.set(\gate, 0);
+	FxRack.insertGroup.freeAll;
+	0.3.wait;
+	FxRack.setMeter(true);
+	src = Synth(\testSrc, [\out, 0], s.defaultGroup, \addToTail);
+	0.5.wait;
+	meterDry = lastMeter;
+	FxRack.toTail;
+	0.5.wait;
+	check.("a source placed after the rack is missed, and caught once the rack moves to the tail (out % then %)".format(
+		meterDry[4].round(0.01), lastMeter[4].round(0.01)),
+		(meterDry[4] < 0.01) and: { (lastMeter[4] - 0.5).abs < 0.05 });
+	FxRack.setMeter(false);
+	src.set(\gate, 0);
+	0.2.wait;
+
 	if(failures.isEmpty) { "PASS".postln } { ("FAILED: " ++ failures.size).postln };
 	s.quit;
 	0.5.wait;

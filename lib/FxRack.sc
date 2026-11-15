@@ -480,6 +480,13 @@ FxRack {
 		);
 	}
 
+	// Some engines add an output stage at the tail of the root group when
+	// they load, after the rack, which then sees none of their sound. The
+	// Lua side calls this once the script's engine is up.
+	*toTail {
+		if(group.notNil) { group.moveToTail(group.group ? server.defaultGroup) };
+	}
+
 	// softcut into the rack; the JACK routes are made by the Lua side
 	*setSoftcut { |value|
 		softcutLevel = value;
@@ -585,6 +592,7 @@ FxRack {
 		OSCFunc({ |msg| this.setKey(msg[1].asSymbol, msg[2].asFloat) }, '/fx/key');
 		OSCFunc({ |msg| this.setTempo(msg[1].asFloat) }, '/fx/tempo');
 		OSCFunc({ |msg| this.setMod(msg[1], msg[2].asFloat) }, '/fx/mod');
+		OSCFunc({ this.do { this.toTail } }, '/fx/tail');
 		OSCFunc({ this.do { this.clear } }, '/fx/clear');
 		OSCFunc({ |msg| fade = msg[1].asFloat.max(0.005) }, '/fx/fade');
 		OSCFunc({ |msg|

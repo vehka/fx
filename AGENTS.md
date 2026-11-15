@@ -88,6 +88,30 @@ the K1-hold gestures and how the meters look in motion (the user has not
 tried it yet); the "save as..." name entry; start-up restore from a script's
 own PSET on the device (covered in the Lua test only).
 
+Fates (`10.0.0.2`, 2026-11-15), update 250926, core `7fe70e29`, now has v2
+at `c1324d9` plus the `FxSetup.insertInput` compatibility shim below. Its old
+`b6b380b` checkout, including local edits in `lib/effectchain.sc`, `lib/fx.sc`
+and `lib/setup.sc` and its `.git`, is at `~/fx-v1-backup-20261115`, outside
+the SC search paths. The old mod list and system state are saved at
+`~/system.mods.pre-fx2-20261115` and `~/system.state.pre-fx2-20261115`.
+Lua (146 checks) and local click test passed. On Fates: service restart and
+full reboot reached `norns.startup_status.ok`; all seven v1 plugins registered;
+awake ran with two inserts and two sends (meter signal on all four paths,
+about 16% SC CPU), bypass/reorder worked, effect/input detail views opened,
+and tempo followed. Its customized Sines engine loaded with the shim; its
+extra insert feed was disabled, and the rack survived Sines -> awake with
+matching params. Rack placement, mix and bypass also worked without a script.
+Screenshots checked the rack and effect detail view, not physical controls.
+Softcut stays on its original JACK route and has no fx param on this firmware.
+Left with no script, an empty rack, send levels zero and meters off. No core
+or script code was changed. One `clock.resume` thread error appeared on the
+first awake load before reboot; it did not recur in the post-reboot checks.
+
+Fates' earlier persistent SUPERCOLLIDER FAIL was duplicate MI extension
+classes, not fx: six standalone `Mi*` directories duplicated the complete
+`supercollider-plugins/mi-UGens` bundle. The standalone directories are backed
+up outside the search paths at `/home/we/sc-duplicate-mi-backup-20261115/`.
+
 Nothing is pushed. `git stash` on `feature/pre-post-insert-sends` holds the
 user's older WIP ("WIP engine-driven sends"); leave it alone.
 
@@ -102,6 +126,9 @@ tempo buses exists outside the click test; one is needed to hear them.
 
 Smaller open items:
 
+- Fates has v2 now (see above); physical controls and advanced native-unit
+  features still need checking there. Watch for a repeat of the one-off
+  `clock.resume` error on script changes; leave core unpatched.
 - Scenes saved before step 4 do not mention the input and send-to-send
   params, and those from before step 6 not the softcut, sidechain and mod
   params, so loading one leaves those as they are.
@@ -188,6 +215,9 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   touches `syn` directly. `add_slot` must add exactly two params or v1 group
   sizes break. Check a change against the plugins on the device, not only
   the test plugin.
+- **Fates' custom Sines engine asks for `FxSetup.insertInput`.** Keep that
+  compatibility getter returning nil: the engine then disables its old extra
+  insert feed. Returning the main bus instead would double its dry signal.
 - **Param actions only fire on change.** Anything restored from a PSET must
   give the same result whatever the line order and whatever was loaded
   before; that is why slot/position params move occupants instead of
@@ -212,6 +242,11 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
 - **Restarting the shield can take two minutes**: a leftover `nullcast-rx`
   process holds up the stop of `norns-main` until systemd kills it after
   90 s. Poll the REPL until it answers instead of sleeping a fixed time.
+- **An engine can put nodes after the rack.** Sines adds its output stage
+  with `addToTail` and no target, which lands in the root group behind the
+  rack. `/fx/tail` at `script_post_init` moves the rack to the tail; if a
+  script is not processed, look at the node order first. The fix was not yet
+  run on the shield (it went offline, 2026-11-15); the click test covers it.
 - **A classvar getter and a class method of the same name do not compile**
   (`classvar <tempo` with `*tempo`), and that is the no-audio failure above.
 - **FxRack raises the server's inputs and outputs to 4 each, for every

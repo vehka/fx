@@ -1026,6 +1026,8 @@ end
 
 function Core.post_init()
   rawset(params, "read", nil)
+  -- the engine is loaded by now: get behind anything it put at the tail
+  send("/fx/tail")
   Core.add_params()
   Core.restore()
   Core.watch_tempo()

@@ -211,6 +211,7 @@ core.settings.persist = false
 -- first run -----------------------------------------------------------------
 start_script(script_init)
 check("ensure is sent before init", sent[1] and sent[1].path == "/fx/ensure")
+check("the rack is moved behind the engine once the script is up", #messages("/fx/tail") == 1)
 check("v1 plugin params exist with their v1 ids",
   params.lookup["fx_distortion_slot"] and params.lookup["fx_distortion_slot_drywet"] and params.lookup["fx_distortion_drive"])
 check("v2 unit params exist", params.lookup["fx_echo_slot"] and params.lookup["fx_echo_time"] and params.lookup["fx_echo_bypass"])

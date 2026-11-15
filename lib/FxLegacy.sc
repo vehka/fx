@@ -34,6 +34,9 @@ FxSetup {
 
 	*sendA { ^FxRack.sends[\a] !? { |s| s.bus } }
 	*sendB { ^FxRack.sends[\b] !? { |s| s.bus } }
+	// Older engine-driven routing used a second copy for the inserts. They now
+	// process the main output in place; nil tells those engines to skip that feed.
+	*insertInput { ^nil }
 	*insertGroup { ^FxRack.insertGroup }
 	*fxGroup { ^FxRack.group }
 }

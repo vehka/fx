@@ -16,38 +16,52 @@ Everything the rack can route. `[brackets]` are params; the main bus is
 SuperCollider's output, which is where any script's engine plays.
 
 ```
- SOURCES                                MAIN BUS
-                                           ║
- engine of any script ──────┬─────────────►║
-                            └─ dry, [LEVELS: input engine] ─► softcut's input (only with softcut through rack)
- audio in ──── [input level, mode] ───────►║
- softcut ───── [softcut: through rack] ───►║
-                                           ║
-                                           ╟──── [send level]   tap: pre insert ─────►  SEND A / B
-                                           ║◄─── [return level] return to: pre insert ─ SEND A / B
-                                      ┌────╨────┐
-                                      │  ins 1  │
-                                      │  ins 2  │  in series, each with
-                                      │  ins 3  │  [dry/wet] and [bypass]
-                                      │  ins 4  │
-                                      └────╥────┘
-                                           ╟──── [send level]   tap: post insert ────►  SEND A / B
-                                           ║◄─── [return level] return to: post insert  SEND A / B
-                                           ▼
-                        norns mixer: reverb, compressor, tape, output
+ SOURCES                         MAIN BUS
+                                    ║
+ engine of any script ──┬──────────►║
+                        │           ║
+   softcut's input ◄────┘           ║
+     dry, [LEVELS: input engine],   ║
+     only with softcut through rack ║
+                                    ║
+ audio in ── [input level, mode] ──►║
+ softcut ─ [softcut: through rack] ►║
+                                    ║
+                                    ╟──► SEND A / B   tap: pre insert
+                                    ║      [send level]
+                                    ║◄── SEND A / B   return to: pre insert
+                                    ║      [return level]
+                               ┌────╨────┐
+                               │  ins 1  │
+                               │  ins 2  │  in series, each with
+                               │  ins 3  │  [dry/wet] and [bypass]
+                               │  ins 4  │
+                               └────╥────┘
+                                    ╟──► SEND A / B   tap: post insert
+                                    ║      [send level]
+                                    ║◄── SEND A / B   return to: post insert
+                                    ║      [return level]
+                                    ▼
+                 norns mixer: reverb, compressor, tape, output
 
 
  SEND A  (send b is the same, with a and b exchanged)
 
- tap from the main bus ────────────┐
- send b ── [b to send a] ──────────┼─► limiter ─► a 1 ─► a 2 ─┬─► [return level] ─► main bus
- voices of an fx-aware engine ─────┘              100 % wet   └─► [a to send b] ──► send b
+ tap from the main bus ─────┐
+ send b ── [b to send a] ───┼─► limiter ─► a 1 ─► a 2 ─┐
+ voices of an fx-aware      │                100 % wet │
+ engine ────────────────────┘                          │
+                                                       │
+         main bus ◄── [return level] ◄─────────────────┤
+         send b   ◄── [a to send b]  ◄─────────────────┘
 
 
  SIDECHAIN AND CONTROL  (for the effects that read them)
 
- [sidechain: off | rack input | audio in | send a | send b | softcut] ─► [sc gain] ─► key signal + its envelope
- [mod 1] .. [mod 4]   four values any effect may follow; map them to MIDI or set them from a script
+ [sidechain: off | rack input | audio in | send a | send b | softcut]
+     ─► [sc gain] ─► key signal + its envelope
+ [mod 1] .. [mod 4]   four values any effect may follow; map them
+                      to MIDI or set them from a script
  tempo                the norns clock, for synced effects
 ```
 
@@ -68,25 +82,33 @@ What follows from it:
 - An effect can be loaded more than once (see copies, below).
 
 In SuperCollider the rack is one group placed directly after norns' output
-group, so it runs after every engine:
+group. Some engines (Sines, for one) add an output stage at the end of the
+node tree when they load, after the rack, so once a script's engine is up the
+rack is moved to the end again. A node an engine adds there later, while the
+script runs, is not processed. The tree, for an engine that stays in its
+group:
 
 ```
 1 group
    group  Crone.context.ig     adc passthrough to Crone.context.in_b
-   group  Crone.context.xg     the script's engine, writing to the main bus [0, 1]
+   group  Crone.context.xg     the script's engine, writing to the main bus
+                               [0, 1]
    group  Crone.context.og
    group  FxRack.group
-      fxTap                    the engine alone -> server outputs 3, 4, for softcut to record
+      fxTap                    the engine alone -> server outputs 3, 4,
+                               for softcut to record
       fxInput                  audio inputs (in_b) -> main bus
       fxInput                  softcut (server inputs 3, 4) -> main bus
-      fxKey                    the chosen sidechain source -> key bus and envelope
+      fxKey                    the chosen sidechain source -> key bus
+                               and envelope
       group  preTaps           the tap of each send with tap = pre insert
       group  preSends          the sends that return pre insert
       group  insert            ins 1..4, each replacing the main bus in place
       group  postTaps          the tap of each send with tap = post insert
       group  postSends         the sends that return post insert
          group  send a
-            fxInlet            taps and send b -> the send's own bus, behind a limiter
+            fxInlet            taps and send b -> the send's own bus,
+                               behind a limiter
             group  chain       a 1, a 2, in place on that bus
             fxReturn           -> main bus
             fxReturn           -> send b

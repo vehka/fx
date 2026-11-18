@@ -352,6 +352,27 @@ level, the saved `norns.state.mix.cut_input_eng` is taken. Switching back to
 loop would be open. `FxRack.initClass` raises `numOutputBusChannels` to 4 as
 well, which moves the hardware input buses from 2, 3 to 4, 5.
 
+### Crone's softcut controls
+
+Crone scales its softcut input (`crone:input_3/4`) by the softcut fader
+(`audio.level_cut`, LEVELS "softcut") and takes the reverb send, the
+multitape "softcut" source and the softcut meter from that same scaled
+signal. Through the rack that input is empty, which was measured on a device
+(update 260819) from crone's meters: the fader changed nothing, the softcut
+meter read zero and softcut showed on the engine meter.
+
+- **The fader** is wrapped like `level_eng_cut`: `Core.wrap_cut` remembers
+  the value, always passes it to crone (whose input is empty while softcut is
+  in the rack, and which then has the right level when softcut goes back)
+  and, while softcut is in the rack, sends it as the softcut input's level
+  (`/fx/softcut`). Until something sets it, `norns.state.mix.cut` is taken.
+  Softcut is then scaled by crone's engine level as well.
+- **The reverb send** (`rev_cut_input`) cannot be carried over: crone's
+  reverb only takes its own inputs, and inside the rack softcut is already
+  mixed with the engine. It is left alone rather than hidden: it is a core
+  param, and hiding it would mean editing the script's paramset at every
+  script start and restoring it. The README says it does nothing then.
+
 ## Sidechain, modulation and tempo
 
 Two buses exist for effects to read; nothing in the rack uses them itself.

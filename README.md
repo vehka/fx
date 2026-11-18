@@ -134,6 +134,18 @@ script then has these at the end of its params menu:
   still records the engine at the level the script or LEVELS > "input engine"
   sets, but it records the engine as it is before the rack, so softcut never
   records itself and effects are heard once, on playback.
+
+  Through the rack, softcut reaches the norns mixer inside the engine signal,
+  which changes what some of the mixer's own controls do:
+
+  - LEVELS > "softcut" still sets softcut's level: the mod applies it where
+    softcut enters the rack. The "engine" level now scales softcut too, and
+    the LEVELS softcut meter stays at zero; softcut shows on the engine meter.
+  - REVERB > "input softcut" does nothing. Softcut reaches the norns reverb
+    through "input engine", at the engine's send level. For reverb on softcut
+    alone, put a reverb on an fx send instead.
+  - Tape's multitrack source "softcut" records nothing; the main tape, which
+    records the output, still has softcut.
 - **fx sends**: per send, the level tapped from the engine output, where it is
   tapped (pre/post insert), the return level, where it returns, and the level
   from its effects into the other send (delay into reverb).

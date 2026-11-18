@@ -590,6 +590,27 @@ function Core.wrap_eng_cut()
   end
 end
 
+-- crone's softcut level last asked for, by a script or the LEVELS menu
+local function cut_level()
+  if Core.cut then return Core.cut end
+  local db = norns and norns.state and norns.state.mix and norns.state.mix.cut
+  return util.dbamp(db or 0)
+end
+
+--- The same for audio.level_cut, crone's softcut fader. Through the rack
+-- softcut no longer passes the crone input that fader scales, so the level
+-- goes to the rack's softcut input as well. Crone still gets it: its input is
+-- empty then, and it has the right level when softcut goes back.
+function Core.wrap_cut()
+  if Core.cut_original or not Core.softcut_available() or not audio.level_cut then return end
+  Core.cut_original = audio.level_cut
+  audio.level_cut = function(value)
+    Core.cut = value
+    Core.cut_original(value)
+    if Core.softcut then send("/fx/softcut", { value }) end
+  end
+end
+
 function Core.set_softcut(on)
   if not Core.softcut_available() then return end
   on = on and true or false
@@ -613,7 +634,7 @@ function Core.set_softcut(on)
       Core.eng_cut_original(level)
     end
   end
-  send("/fx/softcut", { on and 1 or 0 })
+  send("/fx/softcut", { on and cut_level() or 0 })
 end
 
 --- For the audio_post_restore_default_routing hook: core has just put every

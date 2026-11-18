@@ -46,11 +46,13 @@ osc = { send = function(to, path, args) table.insert(sent, { path = path, args =
 -- the routing functions of norns 3.x; routes records what was asked for
 local routes = {}
 local crone_eng_cut = {} -- the levels that reached crone
+local crone_cut = {}     -- the same for crone's softcut fader
 audio = {
   ports = { "SuperCollider:in_1", "SuperCollider:in_2", "SuperCollider:in_3", "SuperCollider:in_4" },
   input_ports = function() return audio.ports end,
   output_ports = function() return { "SuperCollider:out_1", "SuperCollider:out_2", "SuperCollider:out_3", "SuperCollider:out_4" } end,
   level_eng_cut = function(value) table.insert(crone_eng_cut, value) end,
+  level_cut = function(value) table.insert(crone_cut, value) end,
   port_connect = function(from, to) table.insert(routes, "+ " .. from .. " " .. to) return true end,
   port_disconnect = function(from, to) table.insert(routes, "- " .. from .. " " .. to) return true end,
 }
@@ -645,13 +647,16 @@ check("through rack: softcut is patched to SuperCollider instead of crone",
   table.concat(routes, "|") == "- softcut:output_1 crone:input_3|+ softcut:output_1 SuperCollider:in_3"
     .. "|- softcut:output_2 crone:input_4|+ softcut:output_2 SuperCollider:in_4"
     .. "|+ SuperCollider:out_3 softcut:input_1|+ SuperCollider:out_4 softcut:input_2"
-  and has("/fx/softcut", "1"))
+  and has("/fx/softcut", "1.0"))
 check("crone's engine-to-softcut path is closed and the dry feed takes its level",
   crone_eng_cut[#crone_eng_cut] == 0 and has("/fx/cutfeed", "0.8"))
 local crone_calls = #crone_eng_cut
 audio.level_eng_cut(0.3)
 check("a level set meanwhile goes to the feed, not to crone",
   #crone_eng_cut == crone_calls and has("/fx/cutfeed", "0.3"))
+audio.level_cut(0.5)
+check("crone's softcut fader sets the rack's softcut input too",
+  crone_cut[#crone_cut] == 0.5 and messages("/fx/softcut")[#messages("/fx/softcut")] == "0.5")
 routes = {}
 run_hook("audio_post_restore_default_routing")
 check("and patched again after core restored the default routes",
@@ -666,6 +671,10 @@ check("and hands the last level back to crone", crone_eng_cut[#crone_eng_cut] ==
 routes = {}
 run_hook("audio_post_restore_default_routing")
 check("and the hook then leaves the defaults alone", #routes == 0)
+local cut_msgs = #messages("/fx/softcut")
+audio.level_cut(0.25)
+check("out of the rack the softcut fader goes to crone alone",
+  crone_cut[#crone_cut] == 0.25 and #messages("/fx/softcut") == cut_msgs)
 
 audio.ports = { "SuperCollider:in_1", "SuperCollider:in_2" }
 start_script(script_init)

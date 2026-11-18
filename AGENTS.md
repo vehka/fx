@@ -20,115 +20,65 @@ model and the precedence rules for restoring values.
 
 ## Where things stand
 
-Done and tested (Lua test, click test, and on the shield):
+The plan in the design is implemented. Lua test and click test cover all of
+it; on hardware it has been checked to different depths:
 
 1. SC core: in-place chains, wrapper with fades/tails/NaN guard, bundled graph
    changes, v1 plugin compatibility (`lib/FxRack.sc`, `FxUnit.sc`, `FxLegacy.sc`).
+   Checked on hardware.
 2. Lua core: registry, rack model, params, PSET restore, persist across
-   scripts, settings page (`lib/core.lua`, `fx.lua`, `mod.lua`).
+   scripts, settings page (`lib/core.lua`, `fx.lua`, `mod.lua`). Checked on
+   hardware, except start-up restore from a script's own PSET.
 3. Presets: per-effect presets, rack scenes, defaults (`lib/presets.lua`).
 4. Menu UX: rack rows and effect slot rows are scroll-with-E3, apply-with-K3
    (`lib/chooser.lua`).
 5. Routing: audio inputs as a source (`fx_input_*`), send-to-send
    (`fx_send_a_to_b`, `fx_send_b_to_a`), feedback routing through the send
-   inlets (`FxSend`, `\fxInlet`). On the shield: node tree, SC state, CPU
-   (about 17% under awake with two v1 effects) and xruns were checked, and
-   the user confirmed the feedback routing and the audio input by ear
-   (2026-11-15).
-
+   inlets (`FxSend`, `\fxInlet`). Checked on hardware, by ear as well: node
+   tree, CPU (about 17% under awake with two v1 effects), xruns.
 6. Rack page (`lib/page.lua`): slots, order, bypass, dry/wet, meters, CPU,
-   and the two settings as its last rows. Bypass for every unit, v1 included.
-   The layout and the controls were chosen by the user from mock-ups. On the
-   shield (2026-11-15) the page was driven over the REPL by calling its
-   `key`/`enc` and checked by screenshots and SC state, with awake and with
-   no script; meters were checked with a test tone. No xruns while the page
-   was open.
+   settings rows; K1 + K3 opens a row (an effect's params, a send's or the
+   input's routing); rows for input and send levels and for loading and
+   saving racks. Driven over the REPL and checked by screenshot on hardware;
+   the opened-row view and the "save as..." name entry only partly.
+7. Step 6: softcut as a source, sidechain and modulation buses, tempo,
+   single-file plugins through `dust/data/fx/units.lua`, multiple instances
+   ("copies"), `fx.request`. See the sections of those names in the design.
+   The README has a signal graph of the whole rack; keep it in step with
+   routing changes.
 
-7. Rack page, second pass (asked for by the user after trying the first):
-   K1 + K3 opens a row (an effect's params, a send's or the input's
-   routing), rows for the input and each send level, and rows to load and
-   save racks (scenes). Lua test only. It was copied to the shield
-   (2026-11-15) and the shield came back up without fx errors, but the new
-   rows, the opened-row view and the rack name entry were NOT checked there,
-   by screenshot or by hand: the user took the shield offline first.
+   On hardware: start-up (four server inputs, `units.lua` written before the
+   mods' start-up hook, v1 plugins register), `fx_softcut` repatching and
+   restoring after a script change, tempo reaching `FxRack.bpm`. Softcut's
+   dry feed was measured with awake (softcut delay at feedback 0.75,
+   engine-to-softcut 1, output muted, levels read from control buses): with a
+   steady 0.1 tone the feed carried 0.097 and softcut settled at 0.109; with
+   crone's own engine-to-softcut path reopened by hand the noise floor grew
+   twentyfold in 9 s, which is the loop the feed replaces. Crone's softcut
+   controls through the rack were measured from crone's meters: see "Crone's
+   softcut controls" in the design. The softcut fader wrap (`Core.wrap_cut`)
+   is Lua-tested only.
 
-8. Step 6, the last of the plan (2026-11-15): softcut as a source, sidechain
-   and modulation buses, tempo, single-file plugins through
-   `dust/data/fx/units.lua`, multiple instances ("copies"), `fx.request`.
-   See the sections of those names in the design. Lua test and click test
-   only: NOTHING of it has run on the shield. The README has a signal graph
-   of the whole rack; keep it in step with routing changes.
-
-On the shield (2026-11-15, update 260616) step 6's start-up was checked over
-the REPL: the server boots with four inputs (`SuperCollider:in_3/4` exist), `units.lua` is
-written before the mods' start-up hook (empty there: no native unit is
-installed), the seven v1 plugins register, `fx_softcut` repatches softcut and
-back, the routes are made again after a script change, and a tempo change
-reaches `FxRack.bpm`. No `.sc` file on the device uses a literal bus number
-or the server options, so the extra inputs break nothing there.
-
-Softcut's feed was checked there the same day with awake (its delay is
-softcut at feedback 0.75, engine-to-softcut 1), the output muted and levels
-read from control buses in SC: with softcut through the rack and a steady
-0.1 tone as the engine, the feed carried 0.097 and softcut settled at 0.109
-and stayed there; `audio.level_eng_cut(0.5)` and the LEVELS param moved the
-feed, not crone; with crone's path reopened by hand the idle noise floor
-grew twentyfold in 9 s, which is the loop the feed replaces. With awake
-playing (its `out` param is MIDI by default on this shield; set it to audio)
-softcut's peak stayed between 0.13 and 0.23 over 36 s. After the
-second restart the buses are: outputs 0 to 3, `cutBuses` [6, 7], `in_b`
-[8, 9].
-
-Not verified on the device, step 6: softcut through the rack by ear, and
-whether repatching clicks, the sidechain, mod buses and copies (they need
-a native unit), a unit from the units file, `fx.request`, the new page rows.
-
-Not verified: the rack page with the physical keys and encoders, above all
-the K1-hold gestures and how the meters look in motion (the user has not
-tried it yet); the "save as..." name entry; start-up restore from a script's
-own PSET on the device (covered in the Lua test only).
-
-Fates (`10.0.0.2`, 2026-11-15), update 250926, core `7fe70e29`, now has v2
-at `c1324d9` plus the `FxSetup.insertInput` compatibility shim below. Its old
-`b6b380b` checkout, including local edits in `lib/effectchain.sc`, `lib/fx.sc`
-and `lib/setup.sc` and its `.git`, is at `~/fx-v1-backup-20261115`, outside
-the SC search paths. The old mod list and system state are saved at
-`~/system.mods.pre-fx2-20261115` and `~/system.state.pre-fx2-20261115`.
-Lua (146 checks) and local click test passed. On Fates: service restart and
-full reboot reached `norns.startup_status.ok`; all seven v1 plugins registered;
-awake ran with two inserts and two sends (meter signal on all four paths,
-about 16% SC CPU), bypass/reorder worked, effect/input detail views opened,
-and tempo followed. Its customized Sines engine loaded with the shim; its
-extra insert feed was disabled, and the rack survived Sines -> awake with
-matching params. Rack placement, mix and bypass also worked without a script.
-Screenshots checked the rack and effect detail view, not physical controls.
-Softcut stays on its original JACK route and has no fx param on this firmware.
-Left with no script, an empty rack, send levels zero and meters off. No core
-or script code was changed. One `clock.resume` thread error appeared on the
-first awake load before reboot; it did not recur in the post-reboot checks.
-
-Fates' earlier persistent SUPERCOLLIDER FAIL was duplicate MI extension
-classes, not fx: six standalone `Mi*` directories duplicated the complete
-`supercollider-plugins/mi-UGens` bundle. The standalone directories are backed
-up outside the search paths at `/home/we/sc-duplicate-mi-backup-20261115/`.
-
-Nothing is pushed. `git stash` on `feature/pre-post-insert-sends` holds the
-user's older WIP ("WIP engine-driven sends"); leave it alone.
+Not verified on hardware: softcut through the rack by ear and whether
+repatching clicks; the sidechain, mod buses and copies (they need a native
+unit); a unit from the units file; `fx.request`; the rack page with the
+physical keys and encoders, above all the K1-hold gestures and the meters in
+motion.
 
 ## Next
 
-The plan is implemented; what is left is the device. Check step 6 and the
-second pass of the rack page on the shield (see 7 and 8 above; `test/run.lua`
-uses `page.select(label)`, on the device it is
-`_menu.m["fx"].select("send a")` and so on) and ask the user how it feels in
-the hand. No effect that uses the sidechain, mod or
-tempo buses exists outside the click test; one is needed to hear them.
+What is left is hardware. Check the items above on a device (`test/run.lua`
+uses `page.select(label)`; on the device it is
+`_menu.m["fx"].select("send a")` and so on) and ask the user how the page
+feels in the hand. No effect that uses the sidechain, mod or tempo buses
+exists outside the click test; one is needed to hear them.
 
 Smaller open items:
 
-- Fates has v2 now (see above); physical controls and advanced native-unit
-  features still need checking there. Watch for a repeat of the one-off
-  `clock.resume` error on script changes; leave core unpatched.
+- A one-off `clock.resume` thread error was seen once on a script load;
+  watch for a repeat. Leave core unpatched.
+- Crone's REVERB "input softcut" does nothing while softcut is in the rack
+  (documented, not hidden; see the design).
 - Scenes saved before step 4 do not mention the input and send-to-send
   params, and those from before step 6 not the softcut, sidechain and mod
   params, so loading one leaves those as they are.
@@ -161,8 +111,7 @@ connect to the speakers.
 
 ### On the device
 
-The user's shield is a 3.x beta with a custom core. Ask for its address;
-it was `10.0.0.138`. SSH as `we` with key auth.
+Ask the user which device to use and its address. SSH as `we`.
 
 ```
 rsync -a --delete --exclude .git ./ we@<ip>:dust/code/fx/
@@ -193,14 +142,15 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   levels of any feedback patch.
 - `repl.py` needs `websocket-client`: `python3 -m venv <dir outside the repo>`
   and `pip install websocket-client`, then run it with that venv's python.
-- v1 is backed up on the shield at `~/fx-v1-backup`, the old mod list at
-  `~/system.mods.pre-fx2`.
+- Before installing over v1 on a device, back up its `dust/code/fx` and
+  mod list outside the SC search paths (`~`, not under `dust/`).
+- A silent way to measure crone's mixer: wrap `_norns.vu` (it gets input,
+  output, engine, monitor, softcut and tape peaks, 0 to 64) and mute the
+  output; the meters read before the output level. Put `_norns.vu` back.
 
 ## Conventions
 
 - Commit messages: no AI attribution or tool-specific trailers.
-- The repo uses the `vehka` GitHub identity (`github-vehka` SSH alias). Run
-  `gh auth switch --user vehka` before any `gh` command.
 - Commit when a step is done and tested; do not push unless asked.
 - The user wants norns core left unpatched: use the param and mod contracts.
 
@@ -215,9 +165,10 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   touches `syn` directly. `add_slot` must add exactly two params or v1 group
   sizes break. Check a change against the plugins on the device, not only
   the test plugin.
-- **Fates' custom Sines engine asks for `FxSetup.insertInput`.** Keep that
-  compatibility getter returning nil: the engine then disables its old extra
-  insert feed. Returning the main bus instead would double its dry signal.
+- **Engines written against v1 internals may ask for `FxSetup.insertInput`**
+  (a modified Sines does). Keep that compatibility getter returning nil: such
+  an engine then disables its old extra insert feed. Returning the main bus
+  instead would double its dry signal.
 - **Param actions only fire on change.** Anything restored from a PSET must
   give the same result whatever the line order and whatever was loaded
   before; that is why slot/position params move occupants instead of
@@ -239,22 +190,23 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   short press never arrives: it leaves the menu. The page reads `_menu.alt`.
 - **The node tree dump does not list the children of a paused group**, so a
   bypassed v1 unit looks like an empty group. Its synths are still there.
-- **Restarting the shield can take two minutes**: a leftover `nullcast-rx`
-  process holds up the stop of `norns-main` until systemd kills it after
-  90 s. Poll the REPL until it answers instead of sleeping a fixed time.
+- **A restart can take two minutes** when some process holds up the stop of
+  `norns-main` until systemd kills it after 90 s. Poll the REPL until it
+  answers instead of sleeping a fixed time.
 - **An engine can put nodes after the rack.** Sines adds its output stage
   with `addToTail` and no target, which lands in the root group behind the
   rack. `/fx/tail` at `script_post_init` moves the rack to the tail; if a
-  script is not processed, look at the node order first. The fix was not yet
-  run on the shield (it went offline, 2026-11-15); the click test covers it.
+  script is not processed, look at the node order first. The click test
+  covers the fix; it has not run on hardware yet.
 - **A classvar getter and a class method of the same name do not compile**
   (`classvar <tempo` with `*tempo`), and that is the no-audio failure above.
 - **FxRack raises the server's inputs and outputs to 4 each, for every
   script.** Hardware inputs are then buses 4 to 7 and private buses start at
-  8; an engine with hard-coded bus numbers would notice. None on the shield
-  or in the script archive (sompaserv, 311 `.sc` files) has any.
-- **`audio.level_eng_cut` is wrapped by the mod** (see "What softcut records"
-  in the design). With softcut in the rack, crone's real level is 0 and must
+  8; an engine with hard-coded bus numbers would notice. None of 311 `.sc`
+  files in a script archive has any.
+- **`audio.level_eng_cut` and `audio.level_cut` are wrapped by the mod** (see
+  "What softcut records" and "Crone's softcut controls" in the design). With
+  softcut in the rack, crone's real engine-to-softcut level is 0 and must
   stay 0: never call `Core.eng_cut_original` with anything else then.
 - **`audio.port_connect` marks the routing as altered**, so core resets every
   route at the next script change and calls the restore hook. A route made
@@ -265,6 +217,6 @@ ssh we@<ip> 'journalctl -u norns-main -n 80 --no-pager'        # also norns-scla
   `x = d[k] ?? { d[k] = v }` does not give you `v`.
 - **Mod load order is not alphabetical**, and `system_post_startup` can run
   before sclang listens; `/fx/ensure` is sent again at every `script_pre_init`.
-- **xruns at restart and script load are normal on this shield.** Judge a
+- **xruns at restart and script load are normal on some devices.** Judge a
   change by the per-minute count in `journalctl -u norns-jack` while idle and
   while exercising the rack.
